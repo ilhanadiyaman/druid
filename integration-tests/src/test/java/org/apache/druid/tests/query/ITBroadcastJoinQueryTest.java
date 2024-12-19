@@ -39,7 +39,7 @@ import org.apache.druid.tests.indexer.AbstractIndexerTest;
 import org.testng.annotations.Guice;
 import org.testng.annotations.Test;
 
-@Test(groups = TestNGGroup.QUERY)
+@Test(groups = {TestNGGroup.QUERY, TestNGGroup.CENTRALIZED_DATASOURCE_SCHEMA})
 @Guice(moduleFactory = DruidTestModuleFactory.class)
 public class ITBroadcastJoinQueryTest extends AbstractIndexerTest
 {
@@ -84,7 +84,8 @@ public class ITBroadcastJoinQueryTest extends AbstractIndexerTest
               ImmutableList.of()
           );
         }
-        catch (Exception ignored) {
+        catch (Exception e) {
+          LOG.error(e, "Failed to post load rules");
         }
       });
 
@@ -127,6 +128,7 @@ public class ITBroadcastJoinQueryTest extends AbstractIndexerTest
           replaceJoinTemplate(getResourceAsString(BROADCAST_JOIN_QUERIES_RESOURCE), BROADCAST_JOIN_DATASOURCE)
       );
     }
+
     finally {
       closer.close();
 

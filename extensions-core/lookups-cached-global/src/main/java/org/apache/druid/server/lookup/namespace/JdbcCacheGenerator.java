@@ -105,7 +105,7 @@ public final class JdbcCacheGenerator implements CacheGenerator<JdbcExtractionNa
       );
       final long duration = System.nanoTime() - startNs;
       LOG.info(
-          "Finished loading %,d values (%d bytes) for [%s] in %,d ns",
+          "Finished loading %d values (%d bytes) for [%s] in %d ns",
           populateResult.getEntries(),
           populateResult.getBytes(),
           entryId,
@@ -151,7 +151,7 @@ public final class JdbcCacheGenerator implements CacheGenerator<JdbcExtractionNa
     final String keyColumn = namespace.getKeyColumn();
 
     return handle.createQuery(buildLookupQuery(table, filter, keyColumn, valueColumn))
-            .map((index1, r1, ctx1) -> new Pair<>(r1.getString(keyColumn), r1.getString(valueColumn)))
+            .map((index1, r1, ctx1) -> new Pair<>(r1.getString(1), r1.getString(2)))
             .iterator();
   }
 
@@ -204,18 +204,20 @@ public final class JdbcCacheGenerator implements CacheGenerator<JdbcExtractionNa
     if (tsColumn == null) {
       return null;
     }
-    final Timestamp update = dbi.withHandle(
-        handle -> {
-          final String query = StringUtils.format(
-              "SELECT MAX(%s) FROM %s",
-              tsColumn, table
-          );
-          return handle
-              .createQuery(query)
-              .map(TimestampMapper.FIRST)
-              .first();
-        }
+    final String query = StringUtils.format(
+        "SELECT MAX(%s) FROM %s",
+        tsColumn, table
     );
+    final Timestamp update = dbi.withHandle(
+        handle -> handle
+            .createQuery(query)
+            .map(TimestampMapper.FIRST)
+            .first()
+    );
+    if (update == null) {
+      LOG.info("Lookup table[%s] is empty. No rows returned for the query[%s].", table, query);
+      return null;
+    }
     return update.getTime();
   }
 }

@@ -139,13 +139,6 @@ public class HistogramAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(
-        new HistogramAggregatorFactory(fieldName, fieldName, breaksList));
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     if (object instanceof byte[]) {
@@ -227,6 +220,12 @@ public class HistogramAggregatorFactory extends AggregatorFactory
   public int getMaxIntermediateSize()
   {
     return Long.BYTES * (breaks.length + 1) + Float.BYTES * 2;
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new HistogramAggregatorFactory(newName, fieldName, breaksList);
   }
 
   @Override

@@ -83,11 +83,13 @@ public class KafkaLookupExtractorFactoryTest
         mapper.writeValueAsString(expected),
         KafkaLookupExtractorFactory.class
     );
+    result.awaitInitialization();
     Assert.assertEquals(expected.getKafkaTopic(), result.getKafkaTopic());
     Assert.assertEquals(expected.getKafkaProperties(), result.getKafkaProperties());
     Assert.assertEquals(cacheManager, result.getCacheManager());
     Assert.assertEquals(0, expected.getCompletedEventCount());
     Assert.assertEquals(0, result.getCompletedEventCount());
+    Assert.assertTrue(result.isInitialized());
   }
 
   @Test
@@ -392,6 +394,22 @@ public class KafkaLookupExtractorFactoryTest
     );
     Assert.assertThrows(
         "Cannot set kafka property [auto.offset.reset]. Property will be forced to [smallest]. Found ",
+        IAE.class,
+        () -> factory.start()
+    );
+    Assert.assertTrue(factory.close());
+  }
+
+  @Test
+  public void testStartFailsOnAutoCommit()
+  {
+    final KafkaLookupExtractorFactory factory = new KafkaLookupExtractorFactory(
+        cacheManager,
+        TOPIC,
+        ImmutableMap.of("enable.auto.commit", "true")
+    );
+    Assert.assertThrows(
+        "Cannot set kafka property [enable.auto.commit]. Property will be forced to [false]. Found [true]",
         IAE.class,
         () -> factory.start()
     );

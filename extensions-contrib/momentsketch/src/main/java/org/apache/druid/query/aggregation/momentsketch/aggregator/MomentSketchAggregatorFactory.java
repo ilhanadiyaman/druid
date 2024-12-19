@@ -167,19 +167,6 @@ public class MomentSketchAggregatorFactory extends AggregatorFactory
     }
   }
 
-  @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(
-        new MomentSketchAggregatorFactory(
-            fieldName,
-            fieldName,
-            k,
-            compress
-        )
-    );
-  }
-
   private MomentSketchWrapper deserializeFromByteArray(byte[] bytes)
   {
     return MomentSketchWrapper.fromByteArray(bytes);
@@ -262,6 +249,12 @@ public class MomentSketchAggregatorFactory extends AggregatorFactory
     // one integer to specify the number of moments
     // one integer to specify whether data range is compressed
     return (k + 2) * Double.BYTES + 2 * Integer.BYTES;
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new MomentSketchAggregatorFactory(newName, getFieldName(), getK(), getCompress(), cacheTypeId);
   }
 
   @Override

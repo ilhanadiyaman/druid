@@ -29,7 +29,6 @@ import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.vector.VectorColumnSelectorFactory;
 
 import javax.annotation.Nullable;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
@@ -98,15 +97,15 @@ public class CountAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(new CountAggregatorFactory(name));
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     return object;
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new CountAggregatorFactory(newName);
   }
 
   @Nullable

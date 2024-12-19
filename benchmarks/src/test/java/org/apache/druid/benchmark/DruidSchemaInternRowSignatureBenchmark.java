@@ -22,8 +22,9 @@ package org.apache.druid.benchmark;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
-import org.apache.druid.client.BrokerInternalQueryConfig;
+import org.apache.druid.client.InternalQueryConfig;
 import org.apache.druid.client.TimelineServerView;
+import org.apache.druid.client.coordinator.NoopCoordinatorClient;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
@@ -31,13 +32,16 @@ import org.apache.druid.query.metadata.metadata.ColumnAnalysis;
 import org.apache.druid.query.metadata.metadata.SegmentAnalysis;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.join.JoinableFactory;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
 import org.apache.druid.server.QueryLifecycleFactory;
 import org.apache.druid.server.SegmentManager;
 import org.apache.druid.server.coordination.DruidServerMetadata;
 import org.apache.druid.server.coordination.ServerType;
+import org.apache.druid.server.metrics.NoopServiceEmitter;
 import org.apache.druid.server.security.Escalator;
-import org.apache.druid.sql.calcite.planner.PlannerConfig;
-import org.apache.druid.sql.calcite.schema.DruidSchema;
+import org.apache.druid.sql.calcite.schema.BrokerSegmentMetadataCache;
+import org.apache.druid.sql.calcite.schema.BrokerSegmentMetadataCacheConfig;
+import org.apache.druid.sql.calcite.schema.PhysicalDatasourceMetadataFactory;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.timeline.partition.LinearShardSpec;
@@ -57,8 +61,7 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -68,30 +71,29 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 10)
 public class DruidSchemaInternRowSignatureBenchmark
 {
+  private SegmentMetadataCacheForBenchmark cache;
 
-  private DruidSchemaForBenchmark druidSchema;
-
-  private static class DruidSchemaForBenchmark extends DruidSchema
+  private static class SegmentMetadataCacheForBenchmark extends BrokerSegmentMetadataCache
   {
-    public DruidSchemaForBenchmark(
+    public SegmentMetadataCacheForBenchmark(
         final QueryLifecycleFactory queryLifecycleFactory,
         final TimelineServerView serverView,
         final SegmentManager segmentManager,
         final JoinableFactory joinableFactory,
-        final PlannerConfig config,
         final Escalator escalator,
-        final BrokerInternalQueryConfig brokerInternalQueryConfig
+        final InternalQueryConfig brokerInternalQueryConfig
     )
     {
       super(
           queryLifecycleFactory,
           serverView,
-          segmentManager,
-          joinableFactory,
-          config,
+          BrokerSegmentMetadataCacheConfig.create(),
           escalator,
           brokerInternalQueryConfig,
-          null
+          new NoopServiceEmitter(),
+          new PhysicalDatasourceMetadataFactory(joinableFactory, segmentManager),
+          new NoopCoordinatorClient(),
+          CentralizedDatasourceSchemaConfig.create()
       );
     }
 
@@ -102,7 +104,6 @@ public class DruidSchemaInternRowSignatureBenchmark
       return super.refreshSegments(segments);
     }
 
-
     @Override
     public void addSegment(final DruidServerMetadata server, final DataSegment segment)
     {
@@ -110,10 +111,10 @@ public class DruidSchemaInternRowSignatureBenchmark
     }
 
     @Override
-    protected Sequence<SegmentAnalysis> runSegmentMetadataQuery(Iterable<SegmentId> segments)
+    public Sequence<SegmentAnalysis> runSegmentMetadataQuery(Iterable<SegmentId> segments)
     {
       final int numColumns = 1000;
-      Map<String, ColumnAnalysis> columnToAnalysisMap = new HashMap<>();
+      LinkedHashMap<String, ColumnAnalysis> columnToAnalysisMap = new LinkedHashMap<>();
       for (int i = 0; i < numColumns; ++i) {
         columnToAnalysisMap.put(
             "col" + i,
@@ -174,16 +175,15 @@ public class DruidSchemaInternRowSignatureBenchmark
   @Setup
   public void setup()
   {
-
-    druidSchema = new DruidSchemaForBenchmark(
+    cache = new SegmentMetadataCacheForBenchmark(
         EasyMock.mock(QueryLifecycleFactory.class),
         EasyMock.mock(TimelineServerView.class),
         null,
         null,
-        EasyMock.mock(PlannerConfig.class),
         null,
         null
     );
+
     DruidServerMetadata serverMetadata = new DruidServerMetadata(
         "dummy",
         "dummy",
@@ -203,7 +203,7 @@ public class DruidSchemaInternRowSignatureBenchmark
     for (int i = 0; i < 10000; ++i) {
       DataSegment dataSegment = builder.interval(Intervals.of(i + "/" + (i + 1)))
                                        .build();
-      druidSchema.addSegment(serverMetadata, dataSegment);
+      cache.addSegment(serverMetadata, dataSegment);
     }
   }
 
@@ -212,6 +212,6 @@ public class DruidSchemaInternRowSignatureBenchmark
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   public void addSegments(MyState state, Blackhole blackhole) throws IOException
   {
-    blackhole.consume(druidSchema.refreshSegments(state.segmentIds));
+    blackhole.consume(cache.refreshSegments(state.segmentIds));
   }
 }

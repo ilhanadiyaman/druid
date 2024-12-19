@@ -32,6 +32,7 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.emitter.core.Event;
+import org.apache.druid.java.util.emitter.core.EventMap;
 import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import org.joda.time.DateTime;
 import org.junit.Assert;
@@ -39,10 +40,8 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-
 
 public class OpenTelemetryEmitterTest
 {
@@ -98,9 +97,9 @@ public class OpenTelemetryEmitterTest
         new Event()
         {
           @Override
-          public Map<String, Object> toMap()
+          public EventMap toMap()
           {
-            return Collections.emptyMap();
+            return new EventMap();
           }
 
           @Override
@@ -119,15 +118,8 @@ public class OpenTelemetryEmitterTest
   public void testNoEmitNotQueryTimeMetric()
   {
     final ServiceMetricEvent notQueryTimeMetric =
-        new ServiceMetricEvent.Builder().build(
-                                            TIMESTAMP,
-                                            "query/cache/total/hitRate",
-                                            0.54
-                                        )
-                                        .build(
-                                            "broker",
-                                            "brokerHost1"
-                                        );
+        new ServiceMetricEvent.Builder().setMetric("query/cache/total/hitRate", 0.54)
+                                        .build("broker", "brokerHost1");
 
     emitter.emit(notQueryTimeMetric);
     Assert.assertNull(noopExporter.spanDataCollection);
@@ -148,15 +140,9 @@ public class OpenTelemetryEmitterTest
 
     final ServiceMetricEvent queryTimeMetric =
         new ServiceMetricEvent.Builder().setDimension("context", context)
-                                        .build(
-                                            createdTime,
-                                            "query/time",
-                                            metricValue
-                                        )
-                                        .build(
-                                            serviceName,
-                                            "host"
-                                        );
+                                        .setCreatedTime(createdTime)
+                                        .setMetric("query/time", metricValue)
+                                        .build(serviceName, "host");
 
     emitter.emit(queryTimeMetric);
 
@@ -179,15 +165,8 @@ public class OpenTelemetryEmitterTest
 
     final ServiceMetricEvent queryTimeMetricWithAttributes =
         new ServiceMetricEvent.Builder().setDimension("context", context)
-                                        .build(
-                                            TIMESTAMP,
-                                            "query/time",
-                                            100
-                                        )
-                                        .build(
-                                            "druid/broker",
-                                            "host"
-                                        );
+                                        .setMetric("query/time", 100)
+                                        .build("druid/broker", "host");
 
     emitter.emit(queryTimeMetricWithAttributes);
 
@@ -207,15 +186,8 @@ public class OpenTelemetryEmitterTest
 
     final ServiceMetricEvent queryTimeMetric =
         new ServiceMetricEvent.Builder().setDimension("context", context)
-                                        .build(
-                                            TIMESTAMP,
-                                            "query/time",
-                                            100
-                                        )
-                                        .build(
-                                            "druid/broker",
-                                            "host"
-                                        );
+                                        .setMetric("query/time", 100)
+                                        .build("druid/broker", "host");
 
     emitter.emit(queryTimeMetric);
 
@@ -228,15 +200,8 @@ public class OpenTelemetryEmitterTest
   {
     final ServiceMetricEvent queryTimeMetric =
         new ServiceMetricEvent.Builder().setDimension("success", "true")
-                                        .build(
-                                            TIMESTAMP,
-                                            "query/time",
-                                            100
-                                        )
-                                        .build(
-                                            "druid/broker",
-                                            "host"
-                                        );
+                                        .setMetric("query/time", 100)
+                                        .build("druid/broker", "host");
 
     emitter.emit(queryTimeMetric);
 
@@ -249,15 +214,8 @@ public class OpenTelemetryEmitterTest
   {
     final ServiceMetricEvent queryTimeMetric =
         new ServiceMetricEvent.Builder().setDimension("success", "false")
-                                        .build(
-                                            TIMESTAMP,
-                                            "query/time",
-                                            100
-                                        )
-                                        .build(
-                                            "druid/broker",
-                                            "host"
-                                        );
+                                        .setMetric("query/time", 100)
+                                        .build("druid/broker", "host");
 
     emitter.emit(queryTimeMetric);
 

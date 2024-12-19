@@ -19,13 +19,11 @@
 
 package org.apache.druid.query.expressions;
 
-import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
-import org.apache.druid.math.expr.ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr;
+import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.math.expr.ExprMacroTable.ExprMacro;
 import org.apache.druid.math.expr.ExpressionType;
-import org.apache.druid.query.expression.ExprUtils;
 
 import java.util.List;
 
@@ -50,17 +48,15 @@ public class SleepExprMacro implements ExprMacro
   @Override
   public Expr apply(List<Expr> args)
   {
-    if (args.size() != 1) {
-      throw new IAE(ExprUtils.createErrMsg(name(), "must have 1 argument"));
-    }
+    validationHelperCheckArgumentCount(args, 1);
 
     Expr arg = args.get(0);
 
-    class SleepExpr extends BaseScalarUnivariateMacroFunctionExpr
+    class SleepExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
     {
-      public SleepExpr(Expr arg)
+      public SleepExpr(List<Expr> args)
       {
-        super(NAME, arg);
+        super(SleepExprMacro.this, args);
       }
 
       @Override
@@ -78,14 +74,8 @@ public class SleepExprMacro implements ExprMacro
         }
         catch (InterruptedException e) {
           Thread.currentThread().interrupt();
-          throw new RuntimeException(e);
+          throw processingFailed(e, "interrupted");
         }
-      }
-
-      @Override
-      public Expr visit(Shuttle shuttle)
-      {
-        return shuttle.visit(apply(shuttle.visitAll(args)));
       }
 
       /**
@@ -105,6 +95,6 @@ public class SleepExprMacro implements ExprMacro
         return null;
       }
     }
-    return new SleepExpr(arg);
+    return new SleepExpr(args);
   }
 }

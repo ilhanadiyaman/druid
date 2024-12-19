@@ -19,9 +19,6 @@
 
 package org.apache.druid.query.expression;
 
-import com.google.common.base.Preconditions;
-import org.apache.druid.java.util.common.IAE;
-import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
 import org.apache.druid.math.expr.ExprMacroTable;
@@ -48,16 +45,14 @@ public class TimestampFormatExprMacro implements ExprMacroTable.ExprMacro
   @Override
   public Expr apply(final List<Expr> args)
   {
-    if (args.size() < 1 || args.size() > 3) {
-      throw new IAE("Function[%s] must have 1 to 3 arguments", name());
-    }
+    validationHelperCheckArgumentRange(args, 1, 3);
 
     final Expr arg = args.get(0);
     final String formatString;
     final DateTimeZone timeZone;
 
     if (args.size() > 1) {
-      Preconditions.checkArgument(args.get(1).isLiteral(), "Function[%s] format arg must be a literal", name());
+      validationHelperCheckArgIsLiteral(args.get(1), "format");
       formatString = (String) args.get(1).getLiteralValue();
     } else {
       formatString = null;
@@ -73,11 +68,11 @@ public class TimestampFormatExprMacro implements ExprMacroTable.ExprMacro
                                         ? ISODateTimeFormat.dateTime().withZone(timeZone)
                                         : DateTimeFormat.forPattern(formatString).withZone(timeZone);
 
-    class TimestampFormatExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+    class TimestampFormatExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
     {
-      private TimestampFormatExpr(Expr arg)
+      private TimestampFormatExpr(List<Expr> args)
       {
-        super(FN_NAME, arg);
+        super(TimestampFormatExprMacro.this, args);
       }
 
       @Nonnull
@@ -92,38 +87,14 @@ public class TimestampFormatExprMacro implements ExprMacroTable.ExprMacro
         return ExprEval.of(formatter.print(arg.eval(bindings).asLong()));
       }
 
-      @Override
-      public Expr visit(Shuttle shuttle)
-      {
-        return shuttle.visit(apply(shuttle.visitAll(args)));
-      }
-
       @Nullable
       @Override
       public ExpressionType getOutputType(InputBindingInspector inspector)
       {
         return ExpressionType.STRING;
       }
-
-      @Override
-      public String stringify()
-      {
-        if (args.size() > 2) {
-          return StringUtils.format(
-              "%s(%s, %s, %s)",
-              FN_NAME,
-              arg.stringify(),
-              args.get(1).stringify(),
-              args.get(2).stringify()
-          );
-        }
-        if (args.size() > 1) {
-          return StringUtils.format("%s(%s, %s)", FN_NAME, arg.stringify(), args.get(1).stringify());
-        }
-        return super.stringify();
-      }
     }
 
-    return new TimestampFormatExpr(arg);
+    return new TimestampFormatExpr(args);
   }
 }

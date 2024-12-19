@@ -34,23 +34,26 @@ import org.apache.druid.segment.incremental.IncrementalIndexRowHolder;
 
 import javax.annotation.Nullable;
 import java.util.Comparator;
-import java.util.List;
 import java.util.Objects;
 
 public class FloatDimensionIndexer implements DimensionIndexer<Float, Float, Float>
 {
   public static final Comparator<Float> FLOAT_COMPARATOR = Comparators.naturalNullsFirst();
-
+  private final String dimensionName;
   private volatile boolean hasNulls = false;
 
-  @Override
-  public EncodedKeyComponent<Float> processRowValsToUnsortedEncodedKeyComponent(@Nullable Object dimValues, boolean reportParseExceptions)
+  public FloatDimensionIndexer(String dimensionName)
   {
-    if (dimValues instanceof List) {
-      throw new UnsupportedOperationException("Numeric columns do not support multivalue rows.");
-    }
+    this.dimensionName = dimensionName;
+  }
 
-    Float f = DimensionHandlerUtils.convertObjectToFloat(dimValues, reportParseExceptions);
+  @Override
+  public EncodedKeyComponent<Float> processRowValsToUnsortedEncodedKeyComponent(
+      @Nullable Object dimValues,
+      boolean reportParseExceptions
+  )
+  {
+    Float f = DimensionHandlerUtils.convertObjectToFloat(dimValues, reportParseExceptions, dimensionName);
     if (f == null) {
       hasNulls = NullHandling.sqlCompatible();
     }

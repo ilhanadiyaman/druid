@@ -20,6 +20,7 @@
 package org.apache.druid.query.timeboundary;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Functions;
@@ -35,6 +36,7 @@ import org.apache.druid.query.CacheStrategy;
 import org.apache.druid.query.DefaultGenericQueryMetricsFactory;
 import org.apache.druid.query.GenericQueryMetricsFactory;
 import org.apache.druid.query.Query;
+import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryMetrics;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunner;
@@ -46,6 +48,7 @@ import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.timeline.LogicalSegment;
 
+import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 import java.util.Comparator;
 import java.util.List;
@@ -59,12 +62,8 @@ public class TimeBoundaryQueryQueryToolChest
 {
   private static final byte TIMEBOUNDARY_QUERY = 0x3;
 
-  private static final TypeReference<Result<TimeBoundaryResultValue>> TYPE_REFERENCE = new TypeReference<Result<TimeBoundaryResultValue>>()
-  {
-  };
-  private static final TypeReference<Object> OBJECT_TYPE_REFERENCE = new TypeReference<Object>()
-  {
-  };
+  private static final TypeReference<Result<TimeBoundaryResultValue>> TYPE_REFERENCE = new TypeReference<>() {};
+  private static final TypeReference<Object> OBJECT_TYPE_REFERENCE = new TypeReference<>() {};
 
   private final GenericQueryMetricsFactory queryMetricsFactory;
 
@@ -101,7 +100,7 @@ public class TimeBoundaryQueryQueryToolChest
       final QueryRunner<Result<TimeBoundaryResultValue>> runner
   )
   {
-    return new BySegmentSkippingQueryRunner<Result<TimeBoundaryResultValue>>(runner)
+    return new BySegmentSkippingQueryRunner<>(runner)
     {
       @Override
       protected Sequence<Result<TimeBoundaryResultValue>> doRun(
@@ -163,10 +162,20 @@ public class TimeBoundaryQueryQueryToolChest
   @Override
   public CacheStrategy<Result<TimeBoundaryResultValue>, Object, TimeBoundaryQuery> getCacheStrategy(final TimeBoundaryQuery query)
   {
-    return new CacheStrategy<Result<TimeBoundaryResultValue>, Object, TimeBoundaryQuery>()
+    return getCacheStrategy(query, null);
+  }
+
+
+  @Override
+  public CacheStrategy<Result<TimeBoundaryResultValue>, Object, TimeBoundaryQuery> getCacheStrategy(
+      final TimeBoundaryQuery query,
+      @Nullable final ObjectMapper objectMapper
+  )
+  {
+    return new CacheStrategy<>()
     {
       @Override
-      public boolean isCacheable(TimeBoundaryQuery query, boolean willMergeRunners)
+      public boolean isCacheable(TimeBoundaryQuery query, boolean willMergeRunners, boolean bySegment)
       {
         return true;
       }
@@ -196,7 +205,7 @@ public class TimeBoundaryQueryQueryToolChest
       @Override
       public Function<Result<TimeBoundaryResultValue>, Object> prepareForCache(boolean isResultLevelCache)
       {
-        return new Function<Result<TimeBoundaryResultValue>, Object>()
+        return new Function<>()
         {
           @Override
           public Object apply(Result<TimeBoundaryResultValue> input)
@@ -209,7 +218,7 @@ public class TimeBoundaryQueryQueryToolChest
       @Override
       public Function<Object, Result<TimeBoundaryResultValue>> pullFromCache(boolean isResultLevelCache)
       {
-        return new Function<Object, Result<TimeBoundaryResultValue>>()
+        return new Function<>()
         {
           @Override
           @SuppressWarnings("unchecked")
@@ -232,9 +241,10 @@ public class TimeBoundaryQueryQueryToolChest
   {
     if (query.isMinTime() || query.isMaxTime()) {
       RowSignature.Builder builder = RowSignature.builder();
+      final QueryContext queryContext = query.context();
       String outputName = query.isMinTime() ?
-                          query.getContextValue(TimeBoundaryQuery.MIN_TIME_ARRAY_OUTPUT_NAME, TimeBoundaryQuery.MIN_TIME) :
-                          query.getContextValue(TimeBoundaryQuery.MAX_TIME_ARRAY_OUTPUT_NAME, TimeBoundaryQuery.MAX_TIME);
+                          queryContext.getString(TimeBoundaryQuery.MIN_TIME_ARRAY_OUTPUT_NAME, TimeBoundaryQuery.MIN_TIME) :
+                          queryContext.getString(TimeBoundaryQuery.MAX_TIME_ARRAY_OUTPUT_NAME, TimeBoundaryQuery.MAX_TIME);
       return builder.add(outputName, ColumnType.LONG).build();
     }
     return super.resultArraySignature(query);

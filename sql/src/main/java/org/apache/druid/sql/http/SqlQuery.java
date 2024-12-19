@@ -27,12 +27,20 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.apache.calcite.avatica.remote.TypedValue;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.query.QueryContext;
+import org.apache.druid.query.http.ClientSqlQuery;
 
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+/**
+ * See {@link ClientSqlQuery} for the equivalent POJO class used on the client side to interact with the Broker.
+ * Note: The fields {@link #resultFormat} and {@link #parameters} rely on Calcite data types,
+ * preventing this class from being moved to the processing module for reuse.
+ */
 public class SqlQuery
 {
   public static List<TypedValue> getParameterList(List<SqlParameter> parameters)
@@ -56,16 +64,16 @@ public class SqlQuery
   @JsonCreator
   public SqlQuery(
       @JsonProperty("query") final String query,
-      @JsonProperty("resultFormat") final ResultFormat resultFormat,
+      @JsonProperty("resultFormat") @Nullable final ResultFormat resultFormat,
       @JsonProperty("header") final boolean header,
       @JsonProperty("typesHeader") final boolean typesHeader,
       @JsonProperty("sqlTypesHeader") final boolean sqlTypesHeader,
-      @JsonProperty("context") final Map<String, Object> context,
-      @JsonProperty("parameters") final List<SqlParameter> parameters
+      @JsonProperty("context") @Nullable final Map<String, Object> context,
+      @JsonProperty("parameters") @Nullable final List<SqlParameter> parameters
   )
   {
     this.query = Preconditions.checkNotNull(query, "query");
-    this.resultFormat = resultFormat == null ? ResultFormat.OBJECT : resultFormat;
+    this.resultFormat = resultFormat == null ? ResultFormat.DEFAULT_RESULT_FORMAT : resultFormat;
     this.header = header;
     this.typesHeader = typesHeader;
     this.sqlTypesHeader = sqlTypesHeader;
@@ -79,6 +87,19 @@ public class SqlQuery
     if (sqlTypesHeader && !header) {
       throw new ISE("Cannot include 'sqlTypesHeader' without 'header'");
     }
+  }
+
+  public SqlQuery withOverridenContext(Map<String, Object> overridenContext)
+  {
+    return new SqlQuery(
+        getQuery(),
+        getResultFormat(),
+        includeHeader(),
+        includeTypesHeader(),
+        includeSqlTypesHeader(),
+        overridenContext,
+        getParameters()
+    );
   }
 
   @JsonProperty
@@ -118,6 +139,11 @@ public class SqlQuery
   public Map<String, Object> getContext()
   {
     return context;
+  }
+
+  public QueryContext queryContext()
+  {
+    return QueryContext.of(context);
   }
 
   @JsonProperty

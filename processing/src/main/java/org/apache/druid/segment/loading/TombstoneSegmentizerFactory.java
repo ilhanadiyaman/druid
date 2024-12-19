@@ -22,14 +22,19 @@ package org.apache.druid.segment.loading;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import org.apache.druid.collections.bitmap.BitmapFactory;
+import org.apache.druid.query.OrderBy;
+import org.apache.druid.segment.Cursor;
+import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.CursorFactory;
+import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.DimensionHandler;
 import org.apache.druid.segment.Metadata;
 import org.apache.druid.segment.QueryableIndex;
-import org.apache.druid.segment.QueryableIndexStorageAdapter;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentLazyLoadFailCallback;
-import org.apache.druid.segment.StorageAdapter;
+import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnHolder;
+import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.data.Indexed;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.SegmentId;
@@ -102,6 +107,12 @@ public class TombstoneSegmentizerFactory implements SegmentizerFactory
           }
 
           @Override
+          public List<OrderBy> getOrdering()
+          {
+            throw new UnsupportedOperationException();
+          }
+
+          @Override
           public void close()
           {
 
@@ -120,17 +131,9 @@ public class TombstoneSegmentizerFactory implements SegmentizerFactory
             throw new UnsupportedOperationException();
           }
 
-          // mark this index to indicate that it comes from a tombstone:
-          @Override
-          public boolean isFromTombstone()
-          {
-            return true;
-          }
         };
 
-    final QueryableIndexStorageAdapter storageAdapter = new QueryableIndexStorageAdapter(queryableIndex);
-
-    Segment segmentObject = new Segment()
+    final Segment segmentObject = new Segment()
     {
       @Override
       public SegmentId getId()
@@ -141,7 +144,7 @@ public class TombstoneSegmentizerFactory implements SegmentizerFactory
       @Override
       public Interval getDataInterval()
       {
-        return asQueryableIndex().getDataInterval();
+        return tombstone.getInterval();
       }
 
       @Nullable
@@ -152,9 +155,43 @@ public class TombstoneSegmentizerFactory implements SegmentizerFactory
       }
 
       @Override
-      public StorageAdapter asStorageAdapter()
+      public CursorFactory asCursorFactory()
       {
-        return storageAdapter;
+        return new CursorFactory()
+        {
+          @Override
+          public CursorHolder makeCursorHolder(CursorBuildSpec spec)
+          {
+            return new CursorHolder()
+            {
+              @Nullable
+              @Override
+              public Cursor asCursor()
+              {
+                return null;
+              }
+            };
+          }
+
+          @Override
+          public RowSignature getRowSignature()
+          {
+            return RowSignature.empty();
+          }
+
+          @Override
+          @Nullable
+          public ColumnCapabilities getColumnCapabilities(String column)
+          {
+            return null;
+          }
+        };
+      }
+
+      @Override
+      public boolean isTombstone()
+      {
+        return true;
       }
 
       @Override

@@ -16,9 +16,10 @@
  * limitations under the License.
  */
 
-import { Button, Icon, Intent } from '@blueprintjs/core';
+import { Button, Icon, Intent, Tag } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
 import React from 'react';
+import type { Filter } from 'react-table';
 import ReactTable from 'react-table';
 
 import {
@@ -27,26 +28,29 @@ import {
   ACTION_COLUMN_WIDTH,
   ActionCell,
   RefreshButton,
+  TableClickableCell,
   TableColumnSelector,
+  TableFilterableCell,
   ViewControlBar,
 } from '../../components';
 import { AsyncActionDialog, LookupEditDialog } from '../../dialogs/';
 import { LookupTableActionDialog } from '../../dialogs/lookup-table-action-dialog/lookup-table-action-dialog';
-import { LookupSpec, lookupSpecSummary } from '../../druid-models';
+import type { LookupSpec } from '../../druid-models';
+import { lookupSpecSummary } from '../../druid-models';
+import { STANDARD_TABLE_PAGE_SIZE, STANDARD_TABLE_PAGE_SIZE_OPTIONS } from '../../react-table';
 import { Api, AppToaster } from '../../singletons';
 import {
   deepGet,
+  getApiArray,
   getDruidErrorMessage,
-  hasPopoverOpen,
+  hasOverlayOpen,
   isLookupsUninitialized,
   LocalStorageBackedVisibility,
   LocalStorageKeys,
   QueryManager,
   QueryState,
-  STANDARD_TABLE_PAGE_SIZE,
-  STANDARD_TABLE_PAGE_SIZE_OPTIONS,
 } from '../../utils';
-import { BasicAction } from '../../utils/basic-action';
+import type { BasicAction } from '../../utils/basic-action';
 
 import './lookups-view.scss';
 
@@ -57,7 +61,6 @@ const tableColumns: string[] = [
   'Version',
   'Poll period',
   'Summary',
-  ACTION_COLUMN_LABEL,
 ];
 
 const DEFAULT_LOOKUP_TIER = '__default';
@@ -85,7 +88,10 @@ export interface LookupEditInfo {
   spec: Partial<LookupSpec>;
 }
 
-export interface LookupsViewProps {}
+export interface LookupsViewProps {
+  filters: Filter[];
+  onFiltersChange(filters: Filter[]): void;
+}
 
 export interface LookupsViewState {
   lookupEntriesAndTiersState: QueryState<LookupEntriesAndTiers>;
@@ -118,16 +124,17 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
     };
 
     this.lookupsQueryManager = new QueryManager({
-      processQuery: async () => {
-        const tiersResp = await Api.instance.get(
+      processQuery: async (_, cancelToken) => {
+        const tiersResp = await getApiArray(
           '/druid/coordinator/v1/lookups/config?discover=true',
+          cancelToken,
         );
         const tiers =
-          tiersResp.data && tiersResp.data.length > 0
-            ? tiersResp.data.sort(tierNameCompare)
-            : [DEFAULT_LOOKUP_TIER];
+          tiersResp.length > 0 ? tiersResp.sort(tierNameCompare) : [DEFAULT_LOOKUP_TIER];
 
-        const lookupResp = await Api.instance.get('/druid/coordinator/v1/lookups/config/all');
+        const lookupResp = await Api.instance.get('/druid/coordinator/v1/lookups/config/all', {
+          cancelToken,
+        });
         const lookupData = lookupResp.data;
 
         const lookupEntries: LookupEntry[] = [];
@@ -276,7 +283,7 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
     ];
   }
 
-  renderDeleteLookupAction() {
+  private renderDeleteLookupAction() {
     const { deleteLookupTier, deleteLookupName } = this.state;
     if (!deleteLookupTier || !deleteLookupName) return;
 
@@ -290,8 +297,16 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
           );
         }}
         confirmButtonText="Delete lookup"
-        successText="Lookup was deleted"
-        failText="Could not delete lookup"
+        successText={
+          <>
+            Lookup <Tag minimal>{deleteLookupName}</Tag> was deleted
+          </>
+        }
+        failText={
+          <>
+            Could not delete lookup <Tag minimal>{deleteLookupName}</Tag>
+          </>
+        }
         intent={Intent.DANGER}
         onClose={() => {
           this.setState({ deleteLookupTier: undefined, deleteLookupName: undefined });
@@ -305,124 +320,163 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
     );
   }
 
-  renderLookupsTable() {
+  private onDetail(lookup: LookupEntry): void {
+    const lookupId = lookup.id;
+    const lookupTier = lookup.tier;
+    this.setState({
+      lookupTableActionDialogId: lookupId,
+      actions: this.getLookupActions(lookupTier, lookupId),
+    });
+  }
+
+  private renderFilterableCell(field: string) {
+    const { filters, onFiltersChange } = this.props;
+
+    // eslint-disable-next-line react/display-name
+    return (row: { value: any }) => (
+      <TableFilterableCell
+        field={field}
+        value={row.value}
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+      >
+        {row.value}
+      </TableFilterableCell>
+    );
+  }
+
+  private renderLookupsTable() {
+    const { filters, onFiltersChange } = this.props;
     const { lookupEntriesAndTiersState, visibleColumns } = this.state;
     const lookupEntriesAndTiers = lookupEntriesAndTiersState.data;
     const lookups = lookupEntriesAndTiers ? lookupEntriesAndTiers.lookupEntries : [];
 
     if (isLookupsUninitialized(lookupEntriesAndTiersState.error)) {
       return (
-        <div className="init-div">
+        <div className="init-pane">
           <Button
             icon={IconNames.BUILD}
             text="Initialize lookups"
-            onClick={() => this.initializeLookup()}
+            onClick={() => void this.initializeLookup()}
+            large
+            intent={Intent.PRIMARY}
           />
         </div>
       );
     }
 
     return (
-      <>
-        <ReactTable
-          data={lookups}
-          loading={lookupEntriesAndTiersState.loading}
-          noDataText={
-            !lookupEntriesAndTiersState.loading && !lookups.length
-              ? 'No lookups'
-              : lookupEntriesAndTiersState.getErrorMessage() || ''
-          }
-          filterable
-          defaultSorted={[{ id: 'lookup_name', desc: false }]}
-          defaultPageSize={STANDARD_TABLE_PAGE_SIZE}
-          pageSizeOptions={STANDARD_TABLE_PAGE_SIZE_OPTIONS}
-          showPagination={lookups.length > STANDARD_TABLE_PAGE_SIZE}
-          columns={[
-            {
-              Header: 'Lookup name',
-              show: visibleColumns.shown('Lookup name'),
-              id: 'lookup_name',
-              accessor: 'id',
-              filterable: true,
-              width: 200,
-            },
-            {
-              Header: 'Lookup tier',
-              show: visibleColumns.shown('Lookup tier'),
-              id: 'tier',
-              accessor: 'tier',
-              filterable: true,
-              width: 100,
-            },
-            {
-              Header: 'Type',
-              show: visibleColumns.shown('Type'),
-              id: 'type',
-              accessor: 'spec.type',
-              filterable: true,
-              width: 150,
-            },
-            {
-              Header: 'Version',
-              show: visibleColumns.shown('Version'),
-              id: 'version',
-              accessor: 'version',
-              filterable: true,
-              width: 190,
-            },
-            {
-              Header: 'Poll period',
-              show: visibleColumns.shown('Poll period'),
-              id: 'poolPeriod',
-              width: 150,
-              accessor: row => deepGet(row, 'spec.extractionNamespace.pollPeriod'),
-              Cell: ({ original }) => {
-                if (original.spec.type === 'map') return 'Static map';
-                const pollPeriod = deepGet(original, 'spec.extractionNamespace.pollPeriod');
-                if (!pollPeriod) {
-                  return (
-                    <>
-                      <Icon icon={IconNames.WARNING_SIGN} intent={Intent.WARNING} /> No poll period
-                      set
-                    </>
-                  );
-                }
-                return pollPeriod;
-              },
-            },
-            {
-              Header: 'Summary',
-              show: visibleColumns.shown('Summary'),
-              id: 'summary',
-              accessor: row => lookupSpecSummary(row.spec),
-            },
-            {
-              Header: ACTION_COLUMN_LABEL,
-              show: visibleColumns.shown(ACTION_COLUMN_LABEL),
-              id: ACTION_COLUMN_ID,
-              width: ACTION_COLUMN_WIDTH,
-              filterable: false,
-              accessor: 'id',
-              Cell: ({ original }) => {
-                const lookupId = original.id;
-                const lookupTier = original.tier;
-                const lookupActions = this.getLookupActions(lookupTier, lookupId);
+      <ReactTable
+        data={lookups}
+        loading={lookupEntriesAndTiersState.loading}
+        noDataText={lookupEntriesAndTiersState.getErrorMessage() || 'No lookups'}
+        filterable
+        filtered={filters}
+        onFilteredChange={onFiltersChange}
+        defaultSorted={[{ id: 'lookup_name', desc: false }]}
+        defaultPageSize={STANDARD_TABLE_PAGE_SIZE}
+        pageSizeOptions={STANDARD_TABLE_PAGE_SIZE_OPTIONS}
+        showPagination={lookups.length > STANDARD_TABLE_PAGE_SIZE}
+        columns={[
+          {
+            Header: 'Lookup name',
+            show: visibleColumns.shown('Lookup name'),
+            id: 'lookup_name',
+            accessor: 'id',
+            filterable: true,
+            width: 200,
+            Cell: ({ value, original }) => (
+              <TableClickableCell
+                tooltip="Show detail"
+                onClick={() => this.onDetail(original)}
+                hoverIcon={IconNames.SEARCH_TEMPLATE}
+              >
+                {value}
+              </TableClickableCell>
+            ),
+          },
+          {
+            Header: 'Lookup tier',
+            show: visibleColumns.shown('Lookup tier'),
+            id: 'tier',
+            accessor: 'tier',
+            filterable: true,
+            width: 100,
+            Cell: this.renderFilterableCell('tier'),
+          },
+          {
+            Header: 'Type',
+            show: visibleColumns.shown('Type'),
+            id: 'type',
+            accessor: 'spec.type',
+            filterable: true,
+            width: 150,
+            Cell: this.renderFilterableCell('type'),
+          },
+          {
+            Header: 'Version',
+            show: visibleColumns.shown('Version'),
+            id: 'version',
+            accessor: 'version',
+            filterable: true,
+            width: 190,
+            Cell: this.renderFilterableCell('version'),
+          },
+          {
+            Header: 'Poll period',
+            show: visibleColumns.shown('Poll period'),
+            id: 'poolPeriod',
+            width: 150,
+            className: 'padded',
+            accessor: row => deepGet(row, 'spec.extractionNamespace.pollPeriod'),
+            Cell: ({ original }) => {
+              const { type } = original.spec;
+              if (type === 'map') return 'Static map';
+              if (type === 'kafka') return 'Kafka based';
+              const pollPeriod = deepGet(original, 'spec.extractionNamespace.pollPeriod');
+              if (!pollPeriod) {
                 return (
-                  <ActionCell
-                    onDetail={() => {
-                      this.setState({
-                        lookupTableActionDialogId: lookupId,
-                        actions: lookupActions,
-                      });
-                    }}
-                    actions={lookupActions}
-                  />
+                  <>
+                    <Icon icon={IconNames.WARNING_SIGN} intent={Intent.WARNING} /> No poll period
+                    set
+                  </>
                 );
-              },
+              }
+              return pollPeriod;
             },
-          ]}
-        />
-      </>
+          },
+          {
+            Header: 'Summary',
+            show: visibleColumns.shown('Summary'),
+            id: 'summary',
+            accessor: row => lookupSpecSummary(row.spec),
+            width: 600,
+            Cell: this.renderFilterableCell('summary'),
+          },
+          {
+            Header: ACTION_COLUMN_LABEL,
+            id: ACTION_COLUMN_ID,
+            width: ACTION_COLUMN_WIDTH,
+            filterable: false,
+            sortable: false,
+            accessor: 'id',
+            Cell: ({ original }) => {
+              const lookupId = original.id;
+              const lookupTier = original.tier;
+              const lookupActions = this.getLookupActions(lookupTier, lookupId);
+              return (
+                <ActionCell
+                  onDetail={() => {
+                    this.onDetail(original);
+                  }}
+                  actions={lookupActions}
+                  menuTitle={lookupId}
+                />
+              );
+            },
+          },
+        ]}
+      />
     );
   }
 
@@ -436,7 +490,7 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
     return (
       <LookupEditDialog
         onClose={() => this.setState({ lookupEdit: undefined })}
-        onSubmit={updateLookupVersion => this.submitLookupEdit(updateLookupVersion)}
+        onSubmit={updateLookupVersion => void this.submitLookupEdit(updateLookupVersion)}
         onChange={this.handleChangeLookup}
         lookupId={lookupEdit.id}
         lookupTier={lookupEdit.tier}
@@ -448,7 +502,7 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
     );
   }
 
-  render(): JSX.Element {
+  render() {
     const { lookupEntriesAndTiersState, visibleColumns, lookupTableActionDialogId, actions } =
       this.state;
 
@@ -457,7 +511,7 @@ export class LookupsView extends React.PureComponent<LookupsViewProps, LookupsVi
         <ViewControlBar label="Lookups">
           <RefreshButton
             onRefresh={auto => {
-              if (auto && hasPopoverOpen()) return;
+              if (auto && hasOverlayOpen()) return;
               this.lookupsQueryManager.rerunLastQuery(auto);
             }}
             localStorageKey={LocalStorageKeys.LOOKUPS_REFRESH_RATE}

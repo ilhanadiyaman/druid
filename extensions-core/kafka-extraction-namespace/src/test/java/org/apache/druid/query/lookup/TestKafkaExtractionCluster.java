@@ -21,6 +21,7 @@ package org.apache.druid.query.lookup;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
 import com.google.inject.Binder;
 import com.google.inject.Injector;
 import com.google.inject.Module;
@@ -261,7 +262,82 @@ public class TestKafkaExtractionCluster
 
       log.info("-------------------------     Checking baz bat     -------------------------------");
       Assert.assertEquals("bat", factory.get().apply("baz"));
-      Assert.assertEquals(Collections.singletonList("baz"), factory.get().unapply("bat"));
+      Assert.assertEquals(
+          Collections.singletonList("baz"),
+          Lists.newArrayList(factory.get().unapplyAll(Collections.singleton("bat")))
+      );
+    }
+  }
+
+  @Test(timeout = 60_000L)
+  public void testLookupWithTombstone() throws Exception
+  {
+    try (final Producer<byte[], byte[]> producer = new KafkaProducer(makeProducerProperties())) {
+      checkServer();
+
+      assertUpdated(null, "foo");
+      assertReverseUpdated(ImmutableList.of(), "foo");
+
+      long events = factory.getCompletedEventCount();
+
+      log.info("-------------------------     Sending foo bar     -------------------------------");
+      producer.send(new ProducerRecord<>(TOPIC_NAME, StringUtils.toUtf8("foo"), StringUtils.toUtf8("bar")));
+
+      long start = System.currentTimeMillis();
+      while (events == factory.getCompletedEventCount()) {
+        Thread.sleep(10);
+        if (System.currentTimeMillis() > start + 60_000) {
+          throw new ISE("Took too long to update event");
+        }
+      }
+
+      log.info("-------------------------     Checking foo bar     -------------------------------");
+      assertUpdated("bar", "foo");
+      assertReverseUpdated(Collections.singletonList("foo"), "bar");
+
+      checkServer();
+      events = factory.getCompletedEventCount();
+
+      log.info("-----------------------     Sending foo tombstone     -----------------------------");
+      producer.send(new ProducerRecord<>(TOPIC_NAME, StringUtils.toUtf8("foo"), null));
+      while (events == factory.getCompletedEventCount()) {
+        Thread.sleep(10);
+        if (System.currentTimeMillis() > start + 60_000) {
+          throw new ISE("Took too long to update event");
+        }
+      }
+
+      log.info("-----------------------     Checking foo removed     -----------------------------");
+      assertUpdated(null, "foo");
+      assertReverseUpdated(ImmutableList.of(), "foo");
+    }
+  }
+
+  @Test(timeout = 60_000L)
+  public void testLookupWithInitTombstone() throws Exception
+  {
+    try (final Producer<byte[], byte[]> producer = new KafkaProducer(makeProducerProperties())) {
+      checkServer();
+
+      assertUpdated(null, "foo");
+      assertReverseUpdated(ImmutableList.of(), "foo");
+
+      long events = factory.getCompletedEventCount();
+
+      long start = System.currentTimeMillis();
+
+      log.info("-----------------------     Sending foo tombstone     -----------------------------");
+      producer.send(new ProducerRecord<>(TOPIC_NAME, StringUtils.toUtf8("foo"), null));
+      while (events == factory.getCompletedEventCount()) {
+        Thread.sleep(10);
+        if (System.currentTimeMillis() > start + 60_000) {
+          throw new ISE("Took too long to update event");
+        }
+      }
+
+      log.info("-----------------------     Checking foo removed     -----------------------------");
+      assertUpdated(null, "foo");
+      assertReverseUpdated(ImmutableList.of(), "foo");
     }
   }
 
@@ -293,10 +369,10 @@ public class TestKafkaExtractionCluster
   {
     final LookupExtractor extractor = factory.get();
 
-    while (!expected.equals(extractor.unapply(key))) {
+    while (!expected.equals(Lists.newArrayList(extractor.unapplyAll(Collections.singleton(key))))) {
       Thread.sleep(100);
     }
 
-    Assert.assertEquals("update check", expected, extractor.unapply(key));
+    Assert.assertEquals("update check", expected, Lists.newArrayList(extractor.unapplyAll(Collections.singleton(key))));
   }
 }

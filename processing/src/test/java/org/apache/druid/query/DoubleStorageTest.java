@@ -59,6 +59,7 @@ import org.apache.druid.segment.incremental.IncrementalIndexSchema;
 import org.apache.druid.segment.incremental.IndexSizeExceededException;
 import org.apache.druid.segment.incremental.OnheapIncrementalIndex;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
+import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.apache.druid.timeline.SegmentId;
 import org.joda.time.Interval;
 import org.junit.After;
@@ -73,6 +74,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -80,7 +82,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 @RunWith(Parameterized.class)
-public class DoubleStorageTest
+public class DoubleStorageTest extends InitializedNullHandlingTest
 {
 
   private static final SegmentMetadataQueryRunnerFactory METADATA_QR_FACTORY = new SegmentMetadataQueryRunnerFactory(
@@ -89,7 +91,6 @@ public class DoubleStorageTest
   );
 
   private static final ScanQueryQueryToolChest SCAN_QUERY_QUERY_TOOL_CHEST = new ScanQueryQueryToolChest(
-      new ScanQueryConfig(),
       DefaultGenericQueryMetricsFactory.instance()
   );
 
@@ -105,8 +106,7 @@ public class DoubleStorageTest
                  .dataSource(new TableDataSource(QueryRunnerTestHelper.DATA_SOURCE))
                  .columns(Collections.emptyList())
                  .intervals(QueryRunnerTestHelper.FULL_ON_INTERVAL_SPEC)
-                 .limit(Integer.MAX_VALUE)
-                 .legacy(false);
+                 .limit(Integer.MAX_VALUE);
   }
 
 
@@ -153,42 +153,44 @@ public class DoubleStorageTest
     SegmentAnalysis expectedSegmentAnalysisDouble = new SegmentAnalysis(
         SEGMENT_ID.toString(),
         ImmutableList.of(INTERVAL),
-        ImmutableMap.of(
-            TIME_COLUMN,
-            new ColumnAnalysis(
-                ColumnType.LONG,
-                ValueType.LONG.name(),
-                false,
-                false,
-                100,
-                null,
-                null,
-                null,
-                null
-            ),
-            DIM_NAME,
-            new ColumnAnalysis(
-                ColumnType.STRING,
-                ValueType.STRING.name(),
-                false,
-                false,
-                120,
-                1,
-                DIM_VALUE,
-                DIM_VALUE,
-                null
-            ),
-            DIM_FLOAT_NAME,
-            new ColumnAnalysis(
-                ColumnType.DOUBLE,
-                ValueType.DOUBLE.name(),
-                false,
-                false,
-                80,
-                null,
-                null,
-                null,
-                null
+        new LinkedHashMap<>(
+            ImmutableMap.of(
+                TIME_COLUMN,
+                new ColumnAnalysis(
+                    ColumnType.LONG,
+                    ValueType.LONG.name(),
+                    false,
+                    false,
+                    100,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+                DIM_NAME,
+                new ColumnAnalysis(
+                    ColumnType.STRING,
+                    ValueType.STRING.name(),
+                    false,
+                    false,
+                    120,
+                    1,
+                    DIM_VALUE,
+                    DIM_VALUE,
+                    null
+                ),
+                DIM_FLOAT_NAME,
+                new ColumnAnalysis(
+                    ColumnType.DOUBLE,
+                    ValueType.DOUBLE.name(),
+                    false,
+                    false,
+                    80,
+                    null,
+                    null,
+                    null,
+                    null
+                )
             )
         ), 330,
         MAX_ROWS,
@@ -201,44 +203,47 @@ public class DoubleStorageTest
     SegmentAnalysis expectedSegmentAnalysisFloat = new SegmentAnalysis(
         SEGMENT_ID.toString(),
         ImmutableList.of(INTERVAL),
-        ImmutableMap.of(
-            TIME_COLUMN,
-            new ColumnAnalysis(
-                ColumnType.LONG,
-                ValueType.LONG.name(),
-                false,
-                false,
-                100,
-                null,
-                null,
-                null,
-                null
-            ),
-            DIM_NAME,
-            new ColumnAnalysis(
-                ColumnType.STRING,
-                ValueType.STRING.name(),
-                false,
-                false,
-                120,
-                1,
-                DIM_VALUE,
-                DIM_VALUE,
-                null
-            ),
-            DIM_FLOAT_NAME,
-            new ColumnAnalysis(
-                ColumnType.FLOAT,
-                ValueType.FLOAT.name(),
-                false,
-                false,
-                80,
-                null,
-                null,
-                null,
-                null
+        new LinkedHashMap<>(
+            ImmutableMap.of(
+                TIME_COLUMN,
+                new ColumnAnalysis(
+                    ColumnType.LONG,
+                    ValueType.LONG.name(),
+                    false,
+                    false,
+                    100,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+                DIM_NAME,
+                new ColumnAnalysis(
+                    ColumnType.STRING,
+                    ValueType.STRING.name(),
+                    false,
+                    false,
+                    120,
+                    1,
+                    DIM_VALUE,
+                    DIM_VALUE,
+                    null
+                ),
+                DIM_FLOAT_NAME,
+                new ColumnAnalysis(
+                    ColumnType.FLOAT,
+                    ValueType.FLOAT.name(),
+                    false,
+                    false,
+                    80,
+                    null,
+                    null,
+                    null,
+                    null
+                )
             )
-        ), 330,
+        ),
+        330,
         MAX_ROWS,
         null,
         null,
@@ -352,7 +357,7 @@ public class DoubleStorageTest
     File someTmpFile = File.createTempFile("billy", "yay");
     someTmpFile.delete();
     FileUtils.mkdirp(someTmpFile);
-    INDEX_MERGER_V9.persist(index, someTmpFile, new IndexSpec(), null);
+    INDEX_MERGER_V9.persist(index, someTmpFile, IndexSpec.DEFAULT, null);
     someTmpFile.delete();
     return INDEX_IO.loadIndex(someTmpFile);
   }

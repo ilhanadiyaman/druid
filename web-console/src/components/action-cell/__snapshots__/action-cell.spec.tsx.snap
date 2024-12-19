@@ -6,12 +6,12 @@ exports[`ActionCell matches snapshot 1`] = `
 >
   <span
     aria-hidden="true"
-    class="bp4-icon bp4-icon-search-template action-icon"
-    icon="search-template"
+    class="bp5-icon bp5-icon-search-template action-icon"
   >
     <svg
       data-icon="search-template"
       height="16"
+      role="img"
       viewBox="0 0 16 16"
       width="16"
     >

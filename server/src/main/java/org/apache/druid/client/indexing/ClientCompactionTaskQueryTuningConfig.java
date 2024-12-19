@@ -28,6 +28,7 @@ import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.incremental.AppendableIndexSpec;
 import org.apache.druid.segment.incremental.OnheapIncrementalIndex;
 import org.apache.druid.segment.writeout.SegmentWriteOutMediumFactory;
+import org.apache.druid.server.coordinator.DataSourceCompactionConfig;
 import org.apache.druid.server.coordinator.UserCompactionTaskQueryTuningConfig;
 import org.joda.time.Duration;
 
@@ -75,7 +76,20 @@ public class ClientCompactionTaskQueryTuningConfig
   @Nullable
   private final Integer totalNumMergeTasks;
   @Nullable
+  private final Integer maxColumnsToMerge;
+  @Nullable
   private final AppendableIndexSpec appendableIndexSpec;
+
+  public static ClientCompactionTaskQueryTuningConfig from(
+      DataSourceCompactionConfig compactionConfig
+  )
+  {
+    if (compactionConfig == null) {
+      return from(null, null, null);
+    } else {
+      return from(compactionConfig.getTuningConfig(), compactionConfig.getMaxRowsPerSegment(), null);
+    }
+  }
 
   public static ClientCompactionTaskQueryTuningConfig from(
       @Nullable UserCompactionTaskQueryTuningConfig userCompactionTaskQueryTuningConfig,
@@ -87,6 +101,7 @@ public class ClientCompactionTaskQueryTuningConfig
       return new ClientCompactionTaskQueryTuningConfig(
           maxRowsPerSegment,
           new OnheapIncrementalIndex.Spec(preserveExistingMetrics),
+          null,
           null,
           null,
           null,
@@ -128,7 +143,8 @@ public class ClientCompactionTaskQueryTuningConfig
           userCompactionTaskQueryTuningConfig.getChatHandlerTimeout(),
           userCompactionTaskQueryTuningConfig.getChatHandlerNumRetries(),
           userCompactionTaskQueryTuningConfig.getMaxNumSegmentsToMerge(),
-          userCompactionTaskQueryTuningConfig.getTotalNumMergeTasks()
+          userCompactionTaskQueryTuningConfig.getTotalNumMergeTasks(),
+          userCompactionTaskQueryTuningConfig.getMaxColumnsToMerge()
       );
     }
   }
@@ -153,7 +169,8 @@ public class ClientCompactionTaskQueryTuningConfig
       @JsonProperty("chatHandlerTimeout") @Nullable Duration chatHandlerTimeout,
       @JsonProperty("chatHandlerNumRetries") @Nullable Integer chatHandlerNumRetries,
       @JsonProperty("maxNumSegmentsToMerge") @Nullable Integer maxNumSegmentsToMerge,
-      @JsonProperty("totalNumMergeTasks") @Nullable Integer totalNumMergeTasks
+      @JsonProperty("totalNumMergeTasks") @Nullable Integer totalNumMergeTasks,
+      @JsonProperty("maxColumnsToMerge") @Nullable Integer maxColumnsToMerge
   )
   {
     this.maxRowsPerSegment = maxRowsPerSegment;
@@ -175,6 +192,7 @@ public class ClientCompactionTaskQueryTuningConfig
     this.chatHandlerNumRetries = chatHandlerNumRetries;
     this.maxNumSegmentsToMerge = maxNumSegmentsToMerge;
     this.totalNumMergeTasks = totalNumMergeTasks;
+    this.maxColumnsToMerge = maxColumnsToMerge;
   }
 
   @JsonProperty
@@ -320,6 +338,13 @@ public class ClientCompactionTaskQueryTuningConfig
 
   @JsonProperty
   @Nullable
+  public Integer getMaxColumnsToMerge()
+  {
+    return maxColumnsToMerge;
+  }
+
+  @JsonProperty
+  @Nullable
   public AppendableIndexSpec getAppendableIndexSpec()
   {
     return appendableIndexSpec;
@@ -353,6 +378,7 @@ public class ClientCompactionTaskQueryTuningConfig
            Objects.equals(chatHandlerNumRetries, that.chatHandlerNumRetries) &&
            Objects.equals(maxNumSegmentsToMerge, that.maxNumSegmentsToMerge) &&
            Objects.equals(totalNumMergeTasks, that.totalNumMergeTasks) &&
+           Objects.equals(maxColumnsToMerge, that.maxColumnsToMerge) &&
            Objects.equals(appendableIndexSpec, that.appendableIndexSpec);
   }
 
@@ -378,6 +404,7 @@ public class ClientCompactionTaskQueryTuningConfig
         chatHandlerNumRetries,
         maxNumSegmentsToMerge,
         totalNumMergeTasks,
+        maxColumnsToMerge,
         appendableIndexSpec
     );
   }
@@ -404,6 +431,7 @@ public class ClientCompactionTaskQueryTuningConfig
            ", chatHandlerNumRetries=" + chatHandlerNumRetries +
            ", maxNumSegmentsToMerge=" + maxNumSegmentsToMerge +
            ", totalNumMergeTasks=" + totalNumMergeTasks +
+           ", maxColumnsToMerge=" + maxColumnsToMerge +
            ", appendableIndexSpec=" + appendableIndexSpec +
            '}';
   }

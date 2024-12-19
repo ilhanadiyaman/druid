@@ -16,15 +16,16 @@
  * limitations under the License.
  */
 
-import { Button, Position } from '@blueprintjs/core';
+import { Button, Popover, Position } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Popover2 } from '@blueprintjs/popover2';
 import classNames from 'classnames';
 import React, { useRef } from 'react';
 
 import { JSON_STRING_FORMATTER } from '../../utils';
-import { FormattedInput, FormattedInputProps } from '../formatted-input/formatted-input';
-import { Suggestion, SuggestionMenu } from '../suggestion-menu/suggestion-menu';
+import type { FormattedInputProps } from '../formatted-input/formatted-input';
+import { FormattedInput } from '../formatted-input/formatted-input';
+import type { Suggestion } from '../suggestion-menu/suggestion-menu';
+import { SuggestionMenu } from '../suggestion-menu/suggestion-menu';
 
 export interface SuggestibleInputProps extends Omit<FormattedInputProps, 'formatter'> {
   onFinalize?: () => void;
@@ -59,7 +60,7 @@ export const SuggestibleInput = React.memo(function SuggestibleInput(props: Sugg
       }}
       rightElement={
         suggestions && (
-          <Popover2
+          <Popover
             content={
               <SuggestionMenu suggestions={suggestions} onSuggest={handleSuggestionSelect} />
             }
@@ -67,7 +68,7 @@ export const SuggestibleInput = React.memo(function SuggestibleInput(props: Sugg
             autoFocus={false}
           >
             <Button icon={IconNames.CARET_DOWN} minimal />
-          </Popover2>
+          </Popover>
         )
       }
       {...rest}

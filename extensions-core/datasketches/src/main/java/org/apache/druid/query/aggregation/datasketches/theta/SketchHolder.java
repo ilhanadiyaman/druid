@@ -23,7 +23,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Ordering;
 import com.google.common.primitives.Doubles;
 import com.google.common.primitives.Longs;
-import org.apache.datasketches.Family;
+import org.apache.datasketches.common.Family;
 import org.apache.datasketches.memory.Memory;
 import org.apache.datasketches.theta.AnotB;
 import org.apache.datasketches.theta.Intersection;
@@ -34,6 +34,7 @@ import org.apache.datasketches.theta.Union;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.segment.data.SafeWritableMemory;
 
 import javax.annotation.Nullable;
 
@@ -51,7 +52,7 @@ public class SketchHolder
   );
 
   public static final Comparator<Object> COMPARATOR = Ordering.from(
-      new Comparator<Object>()
+      new Comparator<>()
       {
         @Override
         public int compare(Object o1, Object o2)
@@ -80,7 +81,7 @@ public class SketchHolder
       }
   ).nullsFirst();
 
-  private static final Comparator<Sketch> SKETCH_COMPARATOR = new Comparator<Sketch>()
+  private static final Comparator<Sketch> SKETCH_COMPARATOR = new Comparator<>()
   {
     @Override
     public int compare(Sketch o1, Sketch o2)
@@ -89,7 +90,7 @@ public class SketchHolder
     }
   };
 
-  private static final Comparator<Memory> MEMORY_COMPARATOR = new Comparator<Memory>()
+  private static final Comparator<Memory> MEMORY_COMPARATOR = new Comparator<>()
   {
     @SuppressWarnings("SubtractionInCompareTo")
     @Override
@@ -224,6 +225,17 @@ public class SketchHolder
     );
   }
 
+  public static SketchHolder deserializeSafe(Object serializedSketch)
+  {
+    if (serializedSketch instanceof String) {
+      return SketchHolder.of(deserializeFromBase64EncodedStringSafe((String) serializedSketch));
+    } else if (serializedSketch instanceof byte[]) {
+      return SketchHolder.of(deserializeFromByteArraySafe((byte[]) serializedSketch));
+    }
+
+    return deserialize(serializedSketch);
+  }
+
   private static Sketch deserializeFromBase64EncodedString(String str)
   {
     return deserializeFromByteArray(StringUtils.decodeBase64(StringUtils.toUtf8(str)));
@@ -232,6 +244,16 @@ public class SketchHolder
   private static Sketch deserializeFromByteArray(byte[] data)
   {
     return deserializeFromMemory(Memory.wrap(data));
+  }
+
+  private static Sketch deserializeFromBase64EncodedStringSafe(String str)
+  {
+    return deserializeFromByteArraySafe(StringUtils.decodeBase64(StringUtils.toUtf8(str)));
+  }
+
+  private static Sketch deserializeFromByteArraySafe(byte[] data)
+  {
+    return deserializeFromMemory(SafeWritableMemory.wrap(data));
   }
 
   private static Sketch deserializeFromMemory(Memory mem)

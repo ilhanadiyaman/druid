@@ -108,12 +108,6 @@ public class SuppressedAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return delegate.getRequiredColumns();
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     return delegate.deserialize(object);
@@ -167,6 +161,12 @@ public class SuppressedAggregatorFactory extends AggregatorFactory
   {
     // we are already the result of an optimizeForSegment() call
     return this;
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new SuppressedAggregatorFactory(delegate.withName(newName));
   }
 
   @Override

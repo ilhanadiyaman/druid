@@ -34,19 +34,20 @@ import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.ArraySqlType;
 import org.apache.calcite.sql.type.BasicSqlType;
-import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
 import org.apache.calcite.sql.type.SqlTypeFamily;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.StringUtils;
-import org.apache.druid.query.QueryContext;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
+import org.apache.druid.server.security.AuthConfig;
 import org.apache.druid.sql.calcite.expression.DirectOperatorConversion;
 import org.apache.druid.sql.calcite.expression.DruidExpression;
 import org.apache.druid.sql.calcite.expression.Expressions;
 import org.apache.druid.sql.calcite.expression.OperatorConversions;
 import org.apache.druid.sql.calcite.expression.builtin.MultiValueStringOperatorConversions;
+import org.apache.druid.sql.calcite.expression.builtin.TimeParseOperatorConversion;
 import org.apache.druid.sql.calcite.schema.DruidSchema;
 import org.apache.druid.sql.calcite.schema.DruidSchemaCatalog;
 import org.apache.druid.sql.calcite.schema.NamedDruidSchema;
@@ -55,8 +56,10 @@ import org.apache.druid.sql.calcite.schema.ViewSchema;
 import org.apache.druid.sql.calcite.table.RowSignatures;
 import org.apache.druid.sql.calcite.util.CalciteTestBase;
 import org.apache.druid.sql.calcite.util.CalciteTests;
+import org.apache.druid.sql.hook.DruidHookDispatcher;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.easymock.EasyMock;
+import org.joda.time.DateTimeZone;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -70,17 +73,18 @@ public class DruidRexExecutorTest extends InitializedNullHandlingTest
   private static final SqlOperator OPERATOR = OperatorConversions
       .operatorBuilder(StringUtils.toUpperCase("hyper_unique"))
       .operandTypes(SqlTypeFamily.ANY)
-      .requiredOperands(0)
+      .requiredOperandCount(0)
       .returnTypeInference(
-          ReturnTypes.explicit(
-              new RowSignatures.ComplexSqlType(SqlTypeName.OTHER, ColumnType.ofComplex("hyperUnique"), true)
+          opBinding -> RowSignatures.makeComplexType(
+              opBinding.getTypeFactory(),
+              ColumnType.ofComplex("hyperUnique"),
+              true
           )
       )
       .functionCategory(SqlFunctionCategory.USER_DEFINED_FUNCTION)
       .build();
 
-  private static final PlannerContext PLANNER_CONTEXT = PlannerContext.create(
-      "SELECT 1", // The actual query isn't important for this test
+  private static final PlannerToolbox PLANNER_TOOLBOX = new PlannerToolbox(
       new DruidOperatorTable(
           Collections.emptySet(),
           ImmutableSet.of(new DirectOperatorConversion(OPERATOR, "hyper_unique"))
@@ -95,7 +99,20 @@ public class DruidRexExecutorTest extends InitializedNullHandlingTest
               NamedViewSchema.NAME, new NamedViewSchema(EasyMock.createMock(ViewSchema.class))
           )
       ),
-      new QueryContext()
+      CalciteTests.createJoinableFactoryWrapper(),
+      CatalogResolver.NULL_RESOLVER,
+      "druid",
+      new CalciteRulesManager(ImmutableSet.of()),
+      CalciteTests.TEST_AUTHORIZER_MAPPER,
+      AuthConfig.newBuilder().build(),
+      new DruidHookDispatcher()
+  );
+  private static final PlannerContext PLANNER_CONTEXT = PlannerContext.create(
+      PLANNER_TOOLBOX,
+      "SELECT 1", // The actual query isn't important for this test
+      null, /* Don't need an engine */
+      Collections.emptyMap(),
+      null
   );
 
   private final RexBuilder rexBuilder = new RexBuilder(new JavaTypeFactoryImpl());
@@ -123,6 +140,74 @@ public class DruidRexExecutorTest extends InitializedNullHandlingTest
     Assert.assertEquals(1, reduced.size());
     Assert.assertEquals(SqlKind.LITERAL, reduced.get(0).getKind());
     Assert.assertEquals(new BigDecimal(30L), ((RexLiteral) reduced.get(0)).getValue());
+  }
+
+  @Test
+  public void testCastDateReduced()
+  {
+    // CAST('2010-01-01' AS DATE)
+    RexNode call = rexBuilder.makeCall(
+        rexBuilder.getTypeFactory().createSqlType(SqlTypeName.DATE),
+        SqlStdOperatorTable.CAST,
+        Collections.singletonList(rexBuilder.makeLiteral("2010-01-01"))
+    );
+
+    DruidRexExecutor rexy = new DruidRexExecutor(PLANNER_CONTEXT);
+    List<RexNode> reduced = new ArrayList<>();
+    rexy.reduce(rexBuilder, ImmutableList.of(call), reduced);
+    Assert.assertEquals(1, reduced.size());
+    Assert.assertEquals(SqlKind.LITERAL, reduced.get(0).getKind());
+    Assert.assertEquals(
+        rexBuilder.makeDateLiteral(
+            Calcites.jodaToCalciteDateString(
+                DateTimes.of("2010-01-01"),
+                DateTimeZone.UTC
+            )
+        ),
+        reduced.get(0)
+    );
+  }
+
+  @Test
+  public void testTimeParseReduced()
+  {
+    // TIME_PARSE('2010-01-01T02:03:04Z')
+    RexNode call = rexBuilder.makeCall(
+        new TimeParseOperatorConversion().calciteOperator(),
+        rexBuilder.makeLiteral("2010-01-01T02:03:04Z")
+    );
+
+    DruidRexExecutor rexy = new DruidRexExecutor(PLANNER_CONTEXT);
+    List<RexNode> reduced = new ArrayList<>();
+    rexy.reduce(rexBuilder, ImmutableList.of(call), reduced);
+    Assert.assertEquals(1, reduced.size());
+    Assert.assertEquals(SqlKind.LITERAL, reduced.get(0).getKind());
+    Assert.assertEquals(
+        Calcites.jodaToCalciteTimestampLiteral(
+            rexBuilder,
+            DateTimes.of("2010-01-01T02:03:04Z"),
+            DateTimeZone.UTC,
+            DruidTypeSystem.DEFAULT_TIMESTAMP_PRECISION
+        ),
+        reduced.get(0)
+    );
+  }
+
+  @Test
+  public void testTimeParseUnparseableReduced()
+  {
+    // TIME_PARSE('not a timestamp')
+    RexNode call = rexBuilder.makeCall(
+        new TimeParseOperatorConversion().calciteOperator(),
+        rexBuilder.makeLiteral("not a timestamp")
+    );
+
+    DruidRexExecutor rexy = new DruidRexExecutor(PLANNER_CONTEXT);
+    List<RexNode> reduced = new ArrayList<>();
+    rexy.reduce(rexBuilder, ImmutableList.of(call), reduced);
+    Assert.assertEquals(1, reduced.size());
+    Assert.assertEquals(SqlKind.LITERAL, reduced.get(0).getKind());
+    Assert.assertTrue(RexLiteral.isNullLiteral(reduced.get(0)));
   }
 
   @Test

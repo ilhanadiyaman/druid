@@ -213,22 +213,6 @@ public class ApproximateHistogramAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(
-        new ApproximateHistogramAggregatorFactory(
-            fieldName,
-            fieldName,
-            resolution,
-            numBuckets,
-            lowerLimit,
-            upperLimit,
-            finalizeAsBase64Binary
-        )
-    );
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     if (object instanceof byte[]) {
@@ -345,6 +329,20 @@ public class ApproximateHistogramAggregatorFactory extends AggregatorFactory
   public int getMaxIntermediateSize()
   {
     return new ApproximateHistogram(resolution).getMaxStorageSize();
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new ApproximateHistogramAggregatorFactory(
+        newName,
+        getFieldName(),
+        getResolution(),
+        getNumBuckets(),
+        getLowerLimit(),
+        getUpperLimit(),
+        finalizeAsBase64Binary
+    );
   }
 
   @Override

@@ -21,7 +21,6 @@ package org.apache.druid.query.expression;
 
 import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.hll.HyperLogLogCollector;
-import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
@@ -54,9 +53,7 @@ public class HyperUniqueExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() > 0) {
-        throw new IAE("Function[%s] must have no arguments", name());
-      }
+      validationHelperCheckArgumentCount(args, 0);
       final HyperLogLogCollector collector = HyperLogLogCollector.makeLatestCollector();
       class HllExpression implements ExprMacroTable.ExprMacroFunctionExpr
       {
@@ -138,16 +135,13 @@ public class HyperUniqueExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() != 2) {
-        throw new IAE("Function[%s] must have 2 arguments", name());
-      }
-
+      validationHelperCheckArgumentCount(args, 2);
 
       class HllExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
       {
         public HllExpr(List<Expr> args)
         {
-          super(NAME, args);
+          super(HllAddExprMacro.this, args);
         }
 
         @Override
@@ -160,7 +154,9 @@ public class HyperUniqueExpressions
           if (!TYPE.equals(hllType) ||
               !(hllType.is(ExprType.COMPLEX) && hllCollector.value() instanceof HyperLogLogCollector)
           ) {
-            throw new IAE("Function[%s] must take a hyper-log-log collector as the second argument", NAME);
+            throw HllAddExprMacro.this.validationFailed(
+                "requires a hyper-log-log collector as the second argument"
+            );
           }
           HyperLogLogCollector collector = (HyperLogLogCollector) hllCollector.value();
           assert collector != null;
@@ -181,7 +177,8 @@ public class HyperUniqueExpressions
               break;
             case DOUBLE:
               if (NullHandling.replaceWithDefault() || !input.isNumericNull()) {
-                collector.add(CardinalityAggregator.HASH_FUNCTION.hashLong(Double.doubleToLongBits(input.asDouble())).asBytes());
+                collector.add(CardinalityAggregator.HASH_FUNCTION.hashLong(Double.doubleToLongBits(input.asDouble()))
+                                                                 .asBytes());
               }
               break;
             case LONG:
@@ -190,21 +187,19 @@ public class HyperUniqueExpressions
               }
               break;
             case COMPLEX:
-              if (TYPE.equals(input.type()) || hllType.is(ExprType.COMPLEX) && hllCollector.value() instanceof HyperLogLogCollector) {
+              if (TYPE.equals(input.type())
+                  || hllType.is(ExprType.COMPLEX) && hllCollector.value() instanceof HyperLogLogCollector) {
                 collector.fold((HyperLogLogCollector) input.value());
                 break;
               }
             default:
-              throw new IAE("Function[%s] cannot add [%s] to hyper-log-log collector", NAME, input.type());
+              throw HllAddExprMacro.this.validationFailed(
+                  "cannot add [%s] to hyper-log-log collector",
+                  input.type()
+              );
           }
 
           return ExprEval.ofComplex(TYPE, collector);
-        }
-
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
         }
 
         @Nullable
@@ -231,14 +226,13 @@ public class HyperUniqueExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() != 1) {
-        throw new IAE("Function[%s] must have 1 argument", name());
-      }
-      class HllExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+      validationHelperCheckArgumentCount(args, 1);
+
+      class HllExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
       {
-        public HllExpr(Expr arg)
+        public HllExpr(List<Expr> args)
         {
-          super(NAME, arg);
+          super(HllEstimateExprMacro.this, args);
         }
 
         @Override
@@ -250,17 +244,14 @@ public class HyperUniqueExpressions
           if (!TYPE.equals(hllCollector.type()) ||
               !(hllCollector.type().is(ExprType.COMPLEX) && hllCollector.value() instanceof HyperLogLogCollector)
           ) {
-            throw new IAE("Function[%s] must take a hyper-log-log collector as input", NAME);
+            throw HllEstimateExprMacro.this.validationFailed(
+                "requires a hyper-log-log collector as input but got %s instead",
+                hllCollector.type()
+            );
           }
           HyperLogLogCollector collector = (HyperLogLogCollector) hllCollector.value();
           assert collector != null;
           return ExprEval.ofDouble(collector.estimateCardinality());
-        }
-
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
         }
 
         @Nullable
@@ -270,7 +261,7 @@ public class HyperUniqueExpressions
           return ExpressionType.DOUBLE;
         }
       }
-      return new HllExpr(args.get(0));
+      return new HllExpr(args);
     }
   }
 
@@ -287,15 +278,13 @@ public class HyperUniqueExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() != 1) {
-        throw new IAE("Function[%s] must have 1 argument", name());
-      }
+      validationHelperCheckArgumentCount(args, 1);
 
-      class HllExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+      class HllExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
       {
-        public HllExpr(Expr arg)
+        public HllExpr(List<Expr> args)
         {
-          super(NAME, arg);
+          super(HllRoundEstimateExprMacro.this, args);
         }
 
         @Override
@@ -303,17 +292,14 @@ public class HyperUniqueExpressions
         {
           ExprEval hllCollector = args.get(0).eval(bindings);
           if (!hllCollector.type().equals(TYPE)) {
-            throw new IAE("Function[%s] must take a hyper-log-log collector as input", NAME);
+            throw HllRoundEstimateExprMacro.this.validationFailed(
+                "requires a hyper-log-log collector as input but got %s instead",
+                hllCollector.type()
+            );
           }
           HyperLogLogCollector collector = (HyperLogLogCollector) hllCollector.value();
           assert collector != null;
           return ExprEval.ofLong(collector.estimateCardinalityRound());
-        }
-
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
         }
 
         @Nullable
@@ -323,7 +309,7 @@ public class HyperUniqueExpressions
           return ExpressionType.LONG;
         }
       }
-      return new HllExpr(args.get(0));
+      return new HllExpr(args);
     }
   }
 }

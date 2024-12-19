@@ -20,6 +20,7 @@
 package org.apache.druid.segment.writeout;
 
 import org.apache.druid.java.util.common.IAE;
+import org.apache.druid.java.util.common.io.Closer;
 import org.easymock.EasyMock;
 import org.junit.Assert;
 import org.junit.Before;
@@ -34,18 +35,20 @@ public class FileWriteOutBytesTest
 {
   private FileWriteOutBytes fileWriteOutBytes;
   private FileChannel mockFileChannel;
+  private File mockFile;
 
   @Before
   public void setUp()
   {
     mockFileChannel = EasyMock.mock(FileChannel.class);
-    fileWriteOutBytes = new FileWriteOutBytes(EasyMock.mock(File.class), mockFileChannel);
+    mockFile = EasyMock.mock(File.class);
+    fileWriteOutBytes = new FileWriteOutBytes(mockFile, mockFileChannel, Closer.create());
   }
 
   @Test
-  public void write4KiBIntsShouldNotFlush() throws IOException
+  public void write32KiBIntsShouldNotFlush() throws IOException
   {
-    // Write 4KiB of ints and expect the write operation of the file channel will be triggered only once.
+    // Write 32KiB of ints and expect the write operation of the file channel will be triggered only once.
     EasyMock.expect(mockFileChannel.write(EasyMock.anyObject(ByteBuffer.class)))
             .andAnswer(() -> {
               ByteBuffer buffer = (ByteBuffer) EasyMock.getCurrentArguments()[0];
@@ -54,13 +57,13 @@ public class FileWriteOutBytesTest
               return remaining;
             }).times(1);
     EasyMock.replay(mockFileChannel);
-    final int writeBytes = 4096;
+    final int writeBytes = 32768;
     final int numOfInt = writeBytes / Integer.BYTES;
     for (int i = 0; i < numOfInt; i++) {
       fileWriteOutBytes.writeInt(i);
     }
-    // no need to flush up to 4KiB
-    // the first byte after 4KiB will cause a flush
+    // no need to flush up to 32KiB
+    // the first byte after 32KiB will cause a flush
     fileWriteOutBytes.write(1);
     EasyMock.verify(mockFileChannel);
   }
@@ -90,14 +93,14 @@ public class FileWriteOutBytesTest
               return remaining;
             }).times(1);
     EasyMock.replay(mockFileChannel);
-    ByteBuffer src = ByteBuffer.allocate(4096 + 1);
+    ByteBuffer src = ByteBuffer.allocate(32768 + 1);
     fileWriteOutBytes.write(src);
     Assert.assertEquals(src.capacity(), fileWriteOutBytes.size());
     EasyMock.verify(mockFileChannel);
   }
 
   @Test
-  public void writeBufferLargerThanCapacityThrowsIOEInTheMiddleShouldIncrementSizeCorrectly() throws IOException
+  public void writeBufferLargerThanCapacityWritesDirectlyToFileShouldIncrementSizeCorrectly() throws IOException
   {
     EasyMock.expect(mockFileChannel.write(EasyMock.anyObject(ByteBuffer.class)))
             .andAnswer(() -> {
@@ -106,25 +109,16 @@ public class FileWriteOutBytesTest
               buffer.position(remaining);
               return remaining;
             }).once();
-    EasyMock.expect(mockFileChannel.write(EasyMock.anyObject(ByteBuffer.class)))
-            .andThrow(new IOException())
-            .once();
     EasyMock.replay(mockFileChannel);
-    ByteBuffer src = ByteBuffer.allocate(4096 * 2 + 1);
-    try {
-      fileWriteOutBytes.write(src);
-      Assert.fail("IOException should have been thrown.");
-    }
-    catch (IOException e) {
-      // The second invocation to flush bytes fails. So the size should count what has already been put successfully
-      Assert.assertEquals(4096 * 2, fileWriteOutBytes.size());
-    }
+    ByteBuffer src = ByteBuffer.allocate(32768 * 2 + 1);
+    fileWriteOutBytes.write(src);
+    Assert.assertEquals(32768 * 2 + 1, fileWriteOutBytes.size());
   }
 
   @Test
   public void writeBufferSmallerThanCapacityShouldIncrementSizeCorrectly() throws IOException
   {
-    ByteBuffer src = ByteBuffer.allocate(4096);
+    ByteBuffer src = ByteBuffer.allocate(32768);
     fileWriteOutBytes.write(src);
     Assert.assertEquals(src.capacity(), fileWriteOutBytes.size());
   }
@@ -144,11 +138,11 @@ public class FileWriteOutBytesTest
   @Test
   public void testReadFullyWorks() throws IOException
   {
-    int fileSize = 4096;
+    int fileSize = 32768;
     int numOfInt = fileSize / Integer.BYTES;
     ByteBuffer destination = ByteBuffer.allocate(Integer.BYTES);
     ByteBuffer underlying = ByteBuffer.allocate(fileSize);
-    // Write 4KiB of ints and expect the write operation of the file channel will be triggered only once.
+    // Write 32KiB of ints and expect the write operation of the file channel will be triggered only once.
     EasyMock.expect(mockFileChannel.write(EasyMock.anyObject(ByteBuffer.class)))
             .andAnswer(() -> {
               ByteBuffer buffer = (ByteBuffer) EasyMock.getCurrentArguments()[0];
@@ -179,7 +173,7 @@ public class FileWriteOutBytesTest
   @Test
   public void testReadFullyOutOfBoundsDoesnt() throws IOException
   {
-    int fileSize = 4096;
+    int fileSize = 32768;
     int numOfInt = fileSize / Integer.BYTES;
     ByteBuffer destination = ByteBuffer.allocate(Integer.BYTES);
     EasyMock.replay(mockFileChannel);
@@ -189,7 +183,21 @@ public class FileWriteOutBytesTest
     Assert.assertEquals(fileSize, fileWriteOutBytes.size());
 
     destination.position(0);
-    Assert.assertThrows(IAE.class, () -> fileWriteOutBytes.readFully(5000, destination));
+    Assert.assertThrows(IAE.class, () -> fileWriteOutBytes.readFully(33000, destination));
     EasyMock.verify(mockFileChannel);
+  }
+
+  @Test
+  public void testIOExceptionHasFileInfo() throws Exception
+  {
+    IOException cause = new IOException("Too many bytes");
+    EasyMock.expect(mockFileChannel.write(EasyMock.anyObject(ByteBuffer.class))).andThrow(cause);
+    EasyMock.expect(mockFile.getAbsolutePath()).andReturn("/tmp/file");
+    EasyMock.replay(mockFileChannel, mockFile);
+    fileWriteOutBytes.writeInt(10);
+    fileWriteOutBytes.write(new byte[30]);
+    IOException actual = Assert.assertThrows(IOException.class, () -> fileWriteOutBytes.flush());
+    Assert.assertEquals(String.valueOf(actual.getCause()), actual.getCause(), cause);
+    Assert.assertEquals(actual.getMessage(), actual.getMessage(), "Failed to write to file: /tmp/file. Current size of file: 34");
   }
 }

@@ -22,10 +22,9 @@ package org.apache.druid.indexing.overlord;
 import com.google.common.base.Optional;
 import org.apache.druid.indexer.TaskInfo;
 import org.apache.druid.indexer.TaskStatus;
+import org.apache.druid.indexer.TaskStatusPlus;
 import org.apache.druid.indexing.common.TaskLock;
-import org.apache.druid.indexing.common.actions.TaskAction;
 import org.apache.druid.indexing.common.task.Task;
-import org.apache.druid.metadata.EntryExistsException;
 import org.apache.druid.metadata.TaskLookup;
 import org.apache.druid.metadata.TaskLookup.TaskLookupType;
 
@@ -41,10 +40,8 @@ public interface TaskStorage
    *
    * @param task   task to add
    * @param status task status
-   *
-   * @throws EntryExistsException if the task ID already exists
    */
-  void insert(Task task, TaskStatus status) throws EntryExistsException;
+  void insert(Task task, TaskStatus status);
 
   /**
    * Persists task status in the storage facility. This method should throw an exception if the task status lifecycle
@@ -113,26 +110,6 @@ public interface TaskStorage
   TaskInfo<Task, TaskStatus> getTaskInfo(String taskId);
 
   /**
-   * Add an action taken by a task to the audit log.
-   *
-   * @param task       task to record action for
-   * @param taskAction task action to record
-   * @param <T>        task action return type
-   */
-  @Deprecated
-  <T> void addAuditLog(Task task, TaskAction<T> taskAction);
-
-  /**
-   * Returns all actions taken by a task.
-   *
-   * @param taskid task ID
-   *
-   * @return list of task actions
-   */
-  @Deprecated
-  List<TaskAction> getAuditLogs(String taskid);
-
-  /**
    * Returns a list of currently running or pending tasks as stored in the storage facility. No particular order
    * is guaranteed, but implementations are encouraged to return tasks in ascending order of creation.
    *
@@ -149,6 +126,21 @@ public interface TaskStorage
    * @return list of {@link Task}
    */
   List<Task> getActiveTasksByDatasource(String datasource);
+
+  /**
+   * Returns the status of tasks in metadata storage as TaskStatusPlus
+   * No particular order is guaranteed, but implementations are encouraged to return tasks in ascending order of creation.
+   *
+   * The returned list can contain active tasks and complete tasks depending on the {@code taskLookups} parameter.
+   * See {@link TaskLookup} for more details of active and complete tasks.
+   *
+   * @param taskLookups lookup types and filters
+   * @param datasource  datasource filter
+   */
+  List<TaskStatusPlus> getTaskStatusPlusList(
+      Map<TaskLookupType, TaskLookup> taskLookups,
+      @Nullable String datasource
+  );
 
   /**
    * Returns a list of tasks stored in the storage facility as {@link TaskInfo}. No

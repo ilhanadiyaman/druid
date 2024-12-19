@@ -38,8 +38,8 @@ import org.apache.druid.query.extraction.MapLookupExtractor;
 import org.apache.druid.query.filter.ColumnComparisonDimFilter;
 import org.apache.druid.query.lookup.LookupExtractionFn;
 import org.apache.druid.query.lookup.LookupExtractor;
+import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.IndexBuilder;
-import org.apache.druid.segment.StorageAdapter;
 import org.junit.AfterClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -78,7 +78,7 @@ public class ColumnComparisonFilterTest extends BaseFilterTest
   public ColumnComparisonFilterTest(
       String testName,
       IndexBuilder indexBuilder,
-      Function<IndexBuilder, Pair<StorageAdapter, Closeable>> finisher,
+      Function<IndexBuilder, Pair<CursorFactory, Closeable>> finisher,
       boolean cnf,
       boolean optimize
   )
@@ -95,6 +95,11 @@ public class ColumnComparisonFilterTest extends BaseFilterTest
   @Test
   public void testColumnsWithoutNulls()
   {
+    // columns have mixed type input and so are ingested as COMPLEX<json>
+    // however the comparison filter currently nulls out complex types instead of comparing the values
+    if (isAutoSchema()) {
+      return;
+    }
     assertFilterMatchesSkipVectorize(new ColumnComparisonDimFilter(ImmutableList.of(
         DefaultDimensionSpec.of("dim0"),
         DefaultDimensionSpec.of("dim1")
@@ -117,6 +122,11 @@ public class ColumnComparisonFilterTest extends BaseFilterTest
   @Test
   public void testMissingColumnNotSpecifiedInDimensionList()
   {
+    // columns have mixed type input and so are ingested as COMPLEX<json>
+    // however the comparison filter currently nulls out complex types instead of comparing the values
+    if (isAutoSchema()) {
+      return;
+    }
     assertFilterMatchesSkipVectorize(new ColumnComparisonDimFilter(ImmutableList.of(
         DefaultDimensionSpec.of("dim6"),
         DefaultDimensionSpec.of("dim7")

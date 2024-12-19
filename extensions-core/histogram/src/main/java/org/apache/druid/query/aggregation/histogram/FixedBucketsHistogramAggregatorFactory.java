@@ -223,22 +223,6 @@ public class FixedBucketsHistogramAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(
-        new FixedBucketsHistogramAggregatorFactory(
-            fieldName,
-            fieldName,
-            numBuckets,
-            lowerLimit,
-            upperLimit,
-            outlierHandlingMode,
-            finalizeAsBase64Binary
-        )
-    );
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     if (object instanceof String) {
@@ -300,6 +284,20 @@ public class FixedBucketsHistogramAggregatorFactory extends AggregatorFactory
   public int getMaxIntermediateSize()
   {
     return FixedBucketsHistogram.SERDE_HEADER_SIZE + FixedBucketsHistogram.getFullStorageSize(numBuckets);
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new FixedBucketsHistogramAggregatorFactory(
+        newName,
+        getFieldName(),
+        getNumBuckets(),
+        getLowerLimit(),
+        getUpperLimit(),
+        getOutlierHandlingMode(),
+        isFinalizeAsBase64Binary()
+    );
   }
 
   @Override

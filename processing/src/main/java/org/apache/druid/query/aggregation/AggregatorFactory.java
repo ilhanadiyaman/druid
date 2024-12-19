@@ -26,6 +26,8 @@ import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.query.PerSegmentQueryOptimizationContext;
 import org.apache.druid.segment.ColumnInspector;
 import org.apache.druid.segment.ColumnSelectorFactory;
+import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.ColumnTypeFactory;
 import org.apache.druid.segment.column.ValueType;
@@ -87,7 +89,7 @@ public abstract class AggregatorFactory implements Cacheable
    */
   public AggregatorAndSize factorizeWithSize(ColumnSelectorFactory metricFactory)
   {
-    return new AggregatorAndSize(factorize(metricFactory), getMaxIntermediateSize());
+    return new AggregatorAndSize(factorize(metricFactory), guessAggregatorHeapFootprint(0));
   }
 
   /**
@@ -194,17 +196,15 @@ public abstract class AggregatorFactory implements Cacheable
   }
 
   /**
-   * Used by {@link org.apache.druid.query.groupby.strategy.GroupByStrategyV1} when running nested groupBys, to
-   * "transfer" values from this aggreagtor to an incremental index that the outer query will run on. This method
-   * only exists due to the design of GroupByStrategyV1, and should probably not be used for anything else. If you are
-   * here because you are looking for a way to get the input fields required by this aggregator, and thought
-   * "getRequiredColumns" sounded right, please use {@link #requiredFields()} instead.
-   *
-   * @return AggregatorFactories that can be used to "transfer" values from this aggregator into an incremental index
-   *
-   * @see #requiredFields() a similarly-named method that is perhaps the one you want instead.
+   * This was previously used by group-by v1 and will be removed in a future release
    */
-  public abstract List<AggregatorFactory> getRequiredColumns();
+  @Deprecated
+  public List<AggregatorFactory> getRequiredColumns()
+  {
+    throw new UnsupportedOperationException(
+        "Do not call or implement this method, it is deprecated and will be removed in a future releases."
+    );
+  }
 
   /**
    * A method that knows how to "deserialize" the object from whatever form it might have been put into
@@ -227,6 +227,9 @@ public abstract class AggregatorFactory implements Cacheable
   @Nullable
   public abstract Object finalizeComputation(@Nullable Object object);
 
+  /**
+   * @return output name of the aggregator column.
+   */
   public abstract String getName();
 
   /**
@@ -266,7 +269,6 @@ public abstract class AggregatorFactory implements Cacheable
     }
     return ColumnTypeFactory.ofValueType(finalized);
   }
-
 
   /**
    * This method is deprecated and will be removed soon. Use {@link #getIntermediateType()} instead. Do not call this
@@ -346,6 +348,55 @@ public abstract class AggregatorFactory implements Cacheable
   public AggregatorFactory optimizeForSegment(PerSegmentQueryOptimizationContext optimizationContext)
   {
     return this;
+  }
+
+  /**
+   * Used in cases where we want to change the output name of the aggregator to something else. For eg: if we have
+   * a query `select a, sum(b) as total group by a from table` the aggregator returned from the native group by query is "a0" set in
+   * {@link org.apache.druid.sql.calcite.rel.DruidQuery#computeAggregations}. We can use withName("total") to set the output name
+   * of the aggregator to "total".
+   * <p>
+   * As all implementations of this interface method may not exist, callers of this method are advised to handle such a case.
+   *
+   * @param newName newName of the output for aggregator factory
+   * @return AggregatorFactory with the output name set as the input param.
+   */
+  @SuppressWarnings("unused")
+  public AggregatorFactory withName(String newName)
+  {
+    throw new UOE("Cannot change output name for AggregatorFactory[%s].", this.getClass().getName());
+  }
+
+  /**
+   * Check to see if we can make a 'combining' factory of this aggregator that is suitable to process input from a
+   * selector of values produced by the other {@link AggregatorFactory} representing pre-aggregated data. Typically,
+   * this means that this and the other aggregator have the same inputs ({@link #requiredFields()}, and the same
+   * options for how the data was constructed into the intermediary type. If suitable, this method returns a
+   * 'combining' aggregator factory of this aggregator to use to process the pre-aggregated data which was produced by
+   * the other aggregator.
+   * <p>
+   * This method is used indirectly in service of checking if a
+   * {@link org.apache.druid.segment.projections.QueryableProjection} can be used instead of the base table during
+   * {@link org.apache.druid.segment.CursorFactory#makeCursorHolder(CursorBuildSpec)}, which checks if this
+   * aggregator can be substituted for its combining aggregator if and only if there exists a column that a cursor can
+   * read which was created by an aggregator that satisfies this method. In other words, this aggregator is the 'query'
+   * aggregator defined on the {@link CursorBuildSpec}, the argument to this method is the aggregator which created
+   * some column whose selectors are available to the cursor. If all aggregators on the {@link CursorBuildSpec} can be
+   * paired with aggregators from the underlying table in the cursor factory, then
+   * {@link CursorHolder#isPreAggregated()} will be set to true indicating that query engines should use this
+   * substituted aggregator instead of the original aggregators.
+   *
+   * @param preAggregated {@link AggregatorFactory} which produced the partially aggregated values which are
+   *                      available in a selector
+   * @return a "combining" {@link AggregatorFactory} to use with the pre-aggregated selector data
+   */
+  @Nullable
+  public AggregatorFactory substituteCombiningFactory(AggregatorFactory preAggregated)
+  {
+    if (equals(preAggregated.withName(getName()))) {
+      return getCombiningFactory();
+    }
+    return null;
   }
 
   /**

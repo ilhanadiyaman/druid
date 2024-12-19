@@ -23,6 +23,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.inject.Injector;
 import org.apache.druid.common.aws.AWSModule;
 import org.apache.druid.guice.GuiceInjectors;
+import org.apache.druid.guice.ServerModule;
 import org.apache.druid.segment.loading.OmniDataSegmentArchiver;
 import org.apache.druid.segment.loading.OmniDataSegmentKiller;
 import org.apache.druid.segment.loading.OmniDataSegmentMover;
@@ -38,8 +39,8 @@ public class S3StorageDruidModuleTest
     OmniDataSegmentKiller killer = injector.getInstance(OmniDataSegmentKiller.class);
     Assert.assertTrue(killer.getKillers().containsKey(S3StorageDruidModule.SCHEME_S3_ZIP));
     Assert.assertSame(
-        killer.getKillers().get(S3StorageDruidModule.SCHEME_S3_ZIP),
-        killer.getKillers().get(S3StorageDruidModule.SCHEME_S3_ZIP)
+        killer.getKillers().get(S3StorageDruidModule.SCHEME_S3_ZIP).get(),
+        killer.getKillers().get(S3StorageDruidModule.SCHEME_S3_ZIP).get()
     );
   }
 
@@ -50,8 +51,8 @@ public class S3StorageDruidModuleTest
     OmniDataSegmentArchiver archiver = injector.getInstance(OmniDataSegmentArchiver.class);
     Assert.assertTrue(archiver.getArchivers().containsKey(S3StorageDruidModule.SCHEME_S3_ZIP));
     Assert.assertSame(
-        archiver.getArchivers().get(S3StorageDruidModule.SCHEME_S3_ZIP),
-        archiver.getArchivers().get(S3StorageDruidModule.SCHEME_S3_ZIP)
+        archiver.getArchivers().get(S3StorageDruidModule.SCHEME_S3_ZIP).get(),
+        archiver.getArchivers().get(S3StorageDruidModule.SCHEME_S3_ZIP).get()
     );
   }
 
@@ -62,8 +63,8 @@ public class S3StorageDruidModuleTest
     OmniDataSegmentMover mover = injector.getInstance(OmniDataSegmentMover.class);
     Assert.assertTrue(mover.getMovers().containsKey(S3StorageDruidModule.SCHEME_S3_ZIP));
     Assert.assertSame(
-        mover.getMovers().get(S3StorageDruidModule.SCHEME_S3_ZIP),
-        mover.getMovers().get(S3StorageDruidModule.SCHEME_S3_ZIP)
+        mover.getMovers().get(S3StorageDruidModule.SCHEME_S3_ZIP).get(),
+        mover.getMovers().get(S3StorageDruidModule.SCHEME_S3_ZIP).get()
     );
   }
 
@@ -72,7 +73,8 @@ public class S3StorageDruidModuleTest
     return GuiceInjectors.makeStartupInjectorWithModules(
         ImmutableList.of(
             new AWSModule(),
-            new S3StorageDruidModule()
+            new S3StorageDruidModule(),
+            new ServerModule()
         )
     );
   }

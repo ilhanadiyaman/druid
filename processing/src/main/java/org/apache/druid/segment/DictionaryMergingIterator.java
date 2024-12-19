@@ -124,6 +124,11 @@ public class DictionaryMergingIterator<T extends Comparable<T>> implements Close
     return value;
   }
 
+  public int getCardinality()
+  {
+    return counter;
+  }
+
   protected PeekingIterator<T> transformIndexedIterator(Indexed<T> indexed)
   {
     return Iterators.peekingIterator(
@@ -155,12 +160,6 @@ public class DictionaryMergingIterator<T extends Comparable<T>> implements Close
       pQueue.add(smallest);
     }
     return value;
-  }
-
-  @Override
-  public void remove()
-  {
-    throw new UnsupportedOperationException("remove");
   }
 
   @Override

@@ -20,16 +20,13 @@
 package org.apache.druid.guice;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.ProvisionException;
-import org.apache.druid.client.cache.BackgroundCachePopulator;
 import org.apache.druid.client.cache.CacheConfig;
 import org.apache.druid.client.cache.CachePopulator;
 import org.apache.druid.client.cache.CachePopulatorStats;
-import org.apache.druid.client.cache.ForegroundCachePopulator;
 import org.apache.druid.collections.BlockingPool;
 import org.apache.druid.collections.DefaultBlockingPool;
 import org.apache.druid.collections.NonBlockingPool;
@@ -39,27 +36,26 @@ import org.apache.druid.guice.annotations.Merging;
 import org.apache.druid.guice.annotations.Smile;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.Execs;
-import org.apache.druid.java.util.common.concurrent.ExecutorServiceConfig;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.offheap.OffheapBufferGenerator;
+import org.apache.druid.query.BrokerParallelMergeConfig;
 import org.apache.druid.query.DruidProcessingConfig;
-import org.apache.druid.query.ExecutorServiceMonitor;
 import org.apache.druid.query.ForwardingQueryProcessingPool;
 import org.apache.druid.query.QueryProcessingPool;
-import org.apache.druid.server.metrics.MetricsModule;
+import org.apache.druid.query.groupby.GroupByQueryConfig;
+import org.apache.druid.query.groupby.GroupByResourcesReservationPool;
 import org.apache.druid.utils.JvmUtils;
 
 import java.nio.ByteBuffer;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 
 /**
  * This module is used to fulfill dependency injection of query processing and caching resources: buffer pools and
  * thread pools on Broker. Broker does not need to be allocated an intermediate results pool.
  * This is separated from DruidProcessingModule to separate the needs of the broker from the historicals
+ *
+ * @see DruidProcessingModule
  */
-
 public class BrokerProcessingModule implements Module
 {
   private static final Logger log = new Logger(BrokerProcessingModule.class);
@@ -67,8 +63,8 @@ public class BrokerProcessingModule implements Module
   @Override
   public void configure(Binder binder)
   {
-    binder.bind(ExecutorServiceConfig.class).to(DruidProcessingConfig.class);
-    MetricsModule.register(binder, ExecutorServiceMonitor.class);
+    JsonConfigProvider.bind(binder, DruidProcessingModule.PROCESSING_PROPERTY_PREFIX + ".merge", BrokerParallelMergeConfig.class);
+    DruidProcessingModule.registerConfigsAndMonitor(binder);
   }
 
   @Provides
@@ -79,20 +75,7 @@ public class BrokerProcessingModule implements Module
       CacheConfig cacheConfig
   )
   {
-    if (cacheConfig.getNumBackgroundThreads() > 0) {
-      final ExecutorService exec = Executors.newFixedThreadPool(
-          cacheConfig.getNumBackgroundThreads(),
-          new ThreadFactoryBuilder()
-              .setNameFormat("background-cacher-%d")
-              .setDaemon(true)
-              .setPriority(Thread.MIN_PRIORITY)
-              .build()
-      );
-
-      return new BackgroundCachePopulator(exec, smileMapper, cachePopulatorStats, cacheConfig.getMaxEntrySize());
-    } else {
-      return new ForegroundCachePopulator(smileMapper, cachePopulatorStats, cacheConfig.getMaxEntrySize());
-    }
+    return DruidProcessingModule.createCachePopulator(smileMapper, cachePopulatorStats, cacheConfig);
   }
 
   @Provides
@@ -110,7 +93,6 @@ public class BrokerProcessingModule implements Module
   public NonBlockingPool<ByteBuffer> getIntermediateResultsPool(DruidProcessingConfig config)
   {
     verifyDirectMemory(config);
-
     return new StupidPool<>(
         "intermediate processing pool",
         new OffheapBufferGenerator("intermediate processing", config.intermediateComputeSizeBytes()),
@@ -132,15 +114,26 @@ public class BrokerProcessingModule implements Module
   }
 
   @Provides
+  @LazySingleton
+  @Merging
+  public GroupByResourcesReservationPool getGroupByResourcesReservationPool(
+      @Merging BlockingPool<ByteBuffer> mergeBufferPool,
+      GroupByQueryConfig groupByQueryConfig
+  )
+  {
+    return new GroupByResourcesReservationPool(mergeBufferPool, groupByQueryConfig);
+  }
+
+  @Provides
   @ManageLifecycle
-  public LifecycleForkJoinPoolProvider getMergeProcessingPoolProvider(DruidProcessingConfig config)
+  public LifecycleForkJoinPoolProvider getMergeProcessingPoolProvider(BrokerParallelMergeConfig config)
   {
     return new LifecycleForkJoinPoolProvider(
-        config.getMergePoolParallelism(),
+        config.getParallelism(),
         ForkJoinPool.defaultForkJoinWorkerThreadFactory,
         (t, e) -> log.error(e, "Unhandled exception in thread [%s]", t),
         true,
-        config.getMergePoolAwaitShutdownMillis()
+        config.getAwaitShutdownMillis()
     );
   }
 
@@ -153,10 +146,11 @@ public class BrokerProcessingModule implements Module
 
   private void verifyDirectMemory(DruidProcessingConfig config)
   {
+    final long memoryNeeded = (long) config.intermediateComputeSizeBytes() *
+                              (config.getNumMergeBuffers() + 1);
+
     try {
       final long maxDirectMemory = JvmUtils.getRuntimeInfo().getDirectMemorySizeBytes();
-      final long memoryNeeded = (long) config.intermediateComputeSizeBytes() *
-                                (config.getNumMergeBuffers() + 1);
 
       if (maxDirectMemory < memoryNeeded) {
         throw new ProvisionException(
@@ -174,10 +168,14 @@ public class BrokerProcessingModule implements Module
     catch (UnsupportedOperationException e) {
       log.debug("Checking for direct memory size is not support on this platform: %s", e);
       log.info(
-          "Unable to determine max direct memory size. If druid.processing.buffer.sizeBytes is explicitly configured, "
-          + "then make sure to set -XX:MaxDirectMemorySize to at least \"druid.processing.buffer.sizeBytes * "
-          + "(druid.processing.numMergeBuffers[%,d] + 1)\", "
-          + "or else set -XX:MaxDirectMemorySize to at least 25%% of maximum jvm heap size.",
+          "Your memory settings require at least %,d bytes of direct memory. "
+          + "Your machine must have at least this much memory available, and your JVM "
+          + "-XX:MaxDirectMemorySize parameter must be at least this high. "
+          + "If it is, you may safely ignore this message. "
+          + "Otherwise, consider adjusting your memory settings. "
+          + "Calculation: druid.processing.buffer.sizeBytes[%,d] * (druid.processing.numMergeBuffers[%,d] + 1).",
+          memoryNeeded,
+          config.intermediateComputeSizeBytes(),
           config.getNumMergeBuffers()
       );
     }

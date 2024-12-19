@@ -20,7 +20,6 @@
 package org.apache.druid.query.expression;
 
 import org.apache.druid.common.config.NullHandling;
-import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
@@ -46,15 +45,13 @@ public class RegexpLikeExprMacro implements ExprMacroTable.ExprMacro
   @Override
   public Expr apply(final List<Expr> args)
   {
-    if (args.size() != 2) {
-      throw new IAE("Function[%s] must have 2 arguments", name());
-    }
+    validationHelperCheckArgumentCount(args, 2);
 
     final Expr arg = args.get(0);
     final Expr patternExpr = args.get(1);
 
     if (!ExprUtils.isStringLiteral(patternExpr)) {
-      throw new IAE("Function[%s] pattern must be a string literal", name());
+      throw validationFailed("pattern must be a STRING literal");
     }
 
     // Precompile the pattern.
@@ -62,11 +59,11 @@ public class RegexpLikeExprMacro implements ExprMacroTable.ExprMacro
         StringUtils.nullToEmptyNonDruidDataString((String) patternExpr.getLiteralValue())
     );
 
-    class RegexpLikeExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+    class RegexpLikeExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
     {
-      private RegexpLikeExpr(Expr arg)
+      private RegexpLikeExpr(List<Expr> args)
       {
-        super(FN_NAME, arg);
+        super(RegexpLikeExprMacro.this, args);
       }
 
       @Nonnull
@@ -77,17 +74,11 @@ public class RegexpLikeExprMacro implements ExprMacroTable.ExprMacro
 
         if (s == null) {
           // True nulls do not match anything. Note: this branch only executes in SQL-compatible null handling mode.
-          return ExprEval.ofLongBoolean(false);
+          return ExprEval.ofLong(null);
         } else {
           final Matcher matcher = pattern.matcher(s);
           return ExprEval.ofLongBoolean(matcher.find());
         }
-      }
-
-      @Override
-      public Expr visit(Shuttle shuttle)
-      {
-        return shuttle.visit(apply(shuttle.visitAll(args)));
       }
 
       @Nullable
@@ -96,13 +87,8 @@ public class RegexpLikeExprMacro implements ExprMacroTable.ExprMacro
       {
         return ExpressionType.LONG;
       }
-
-      @Override
-      public String stringify()
-      {
-        return StringUtils.format("%s(%s, %s)", FN_NAME, arg.stringify(), patternExpr.stringify());
-      }
     }
-    return new RegexpLikeExpr(arg);
+
+    return new RegexpLikeExpr(args);
   }
 }

@@ -20,19 +20,22 @@
 package org.apache.druid.segment;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
 import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.data.input.Rows;
 import org.apache.druid.query.dimension.DimensionSpec;
 import org.apache.druid.query.extraction.ExtractionFn;
+import org.apache.druid.query.filter.DruidObjectPredicate;
+import org.apache.druid.query.filter.DruidPredicateFactory;
 import org.apache.druid.query.filter.ValueMatcher;
 import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnCapabilitiesImpl;
 import org.apache.druid.segment.column.ColumnHolder;
 import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.data.IndexedInts;
 import org.apache.druid.segment.data.RangeIndexedInts;
+import org.apache.druid.segment.nested.StructuredData;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
@@ -40,7 +43,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
-import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
@@ -49,26 +51,26 @@ import java.util.function.ToLongFunction;
  */
 public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
 {
-  private static final long NO_ID = -1;
-
   private final Supplier<T> rowSupplier;
 
   @Nullable
-  private final LongSupplier rowIdSupplier;
+  private final RowIdSupplier rowIdSupplier;
   private final RowAdapter<T> adapter;
   private final ColumnInspector columnInspector;
   private final boolean throwParseExceptions;
+  private final boolean useStringValueOfNullInLists;
 
   /**
-   * Package-private constructor for {@link RowBasedCursor}. Allows passing in a rowIdSupplier, which enables
+   * Full constructor for {@link RowBasedCursor}. Allows passing in a rowIdSupplier, which enables
    * column value reuse optimizations.
    */
-  RowBasedColumnSelectorFactory(
+  public RowBasedColumnSelectorFactory(
       final Supplier<T> rowSupplier,
-      @Nullable final LongSupplier rowIdSupplier,
+      @Nullable final RowIdSupplier rowIdSupplier,
       final RowAdapter<T> adapter,
       final ColumnInspector columnInspector,
-      final boolean throwParseExceptions
+      final boolean throwParseExceptions,
+      final boolean useStringValueOfNullInLists
   )
   {
     this.rowSupplier = rowSupplier;
@@ -77,29 +79,42 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
     this.columnInspector =
         Preconditions.checkNotNull(columnInspector, "columnInspector must be nonnull");
     this.throwParseExceptions = throwParseExceptions;
+    this.useStringValueOfNullInLists = useStringValueOfNullInLists;
   }
 
   /**
    * Create an instance based on any object, along with a {@link RowAdapter} for that object.
    *
-   * @param adapter                 adapter for these row objects
-   * @param supplier                supplier of row objects
-   * @param columnInspector         will be used for reporting available columns and their capabilities. Note that this
-   *                                factory will still allow creation of selectors on any named field in the rows, even if
-   *                                it doesn't appear in "columnInspector". (It only needs to be accessible via
-   *                                {@link RowAdapter#columnFunction}.) As a result, you can achieve an untyped mode by
-   *                                passing in {@link org.apache.druid.segment.column.RowSignature#empty()}.
-   * @param throwParseExceptions    whether numeric selectors should throw parse exceptions or use a default/null value
-   *                                when their inputs are not actually numeric
+   * @param adapter                     adapter for these row objects
+   * @param supplier                    supplier of row objects
+   * @param columnInspector             will be used for reporting available columns and their capabilities. Note that
+   *                                    this factory will still allow creation of selectors on any named field in the
+   *                                    rows, even if it doesn't appear in "columnInspector". (It only needs to be
+   *                                    accessible via {@link RowAdapter#columnFunction}.) As a result, you can achieve
+   *                                    an untyped mode by passing in
+   *                                    {@link org.apache.druid.segment.column.RowSignature#empty()}.
+   * @param throwParseExceptions        whether numeric selectors should throw parse exceptions or use a default/null
+   *                                    value when their inputs are not actually numeric
+   * @param useStringValueOfNullInLists whether nulls in multi-value strings should be replaced with the string "null".
+   *                                    for example: the list ["a", null] would be converted to ["a", "null"]. Useful
+   *                                    for callers that need compatibility with {@link Rows#objectToStrings}.
    */
   public static <RowType> RowBasedColumnSelectorFactory<RowType> create(
       final RowAdapter<RowType> adapter,
       final Supplier<RowType> supplier,
       final ColumnInspector columnInspector,
-      final boolean throwParseExceptions
+      final boolean throwParseExceptions,
+      final boolean useStringValueOfNullInLists
   )
   {
-    return new RowBasedColumnSelectorFactory<>(supplier, null, adapter, columnInspector, throwParseExceptions);
+    return new RowBasedColumnSelectorFactory<>(
+        supplier,
+        null,
+        adapter,
+        columnInspector,
+        throwParseExceptions,
+        useStringValueOfNullInLists
+    );
   }
 
   @Nullable
@@ -167,7 +182,7 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
 
       return new BaseSingleValueDimensionSelector()
       {
-        private long currentId = NO_ID;
+        private long currentId = RowIdSupplier.INIT;
         private String currentValue;
 
         @Override
@@ -186,11 +201,11 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
 
         private void updateCurrentValue()
         {
-          if (rowIdSupplier == null || rowIdSupplier.getAsLong() != currentId) {
+          if (rowIdSupplier == null || rowIdSupplier.getRowId() != currentId) {
             currentValue = extractionFn.apply(timestampFunction.applyAsLong(rowSupplier.get()));
 
             if (rowIdSupplier != null) {
-              currentId = rowIdSupplier.getAsLong();
+              currentId = rowIdSupplier.getRowId();
             }
           }
         }
@@ -200,7 +215,7 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
 
       return new DimensionSelector()
       {
-        private long currentId = NO_ID;
+        private long currentId = RowIdSupplier.INIT;
         private List<String> dimensionValues;
 
         private final RangeIndexedInts indexedInts = new RangeIndexedInts();
@@ -219,16 +234,17 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
           return new ValueMatcher()
           {
             @Override
-            public boolean matches()
+            public boolean matches(boolean includeUnknown)
             {
               updateCurrentValues();
 
               if (dimensionValues.isEmpty()) {
-                return value == null;
+                return includeUnknown || value == null;
               }
 
               for (String dimensionValue : dimensionValues) {
-                if (Objects.equals(NullHandling.emptyToNullIfNeeded(dimensionValue), value)) {
+                final String coerced = NullHandling.emptyToNullIfNeeded(dimensionValue);
+                if ((includeUnknown && coerced == null) || Objects.equals(coerced, value)) {
                   return true;
                 }
               }
@@ -245,23 +261,24 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
         }
 
         @Override
-        public ValueMatcher makeValueMatcher(final Predicate<String> predicate)
+        public ValueMatcher makeValueMatcher(final DruidPredicateFactory predicateFactory)
         {
-          final boolean matchNull = predicate.apply(null);
+          final DruidObjectPredicate<String> predicate = predicateFactory.makeStringPredicate();
 
           return new ValueMatcher()
           {
             @Override
-            public boolean matches()
+            public boolean matches(boolean includeUnknown)
             {
               updateCurrentValues();
 
               if (dimensionValues.isEmpty()) {
-                return matchNull;
+                return predicate.apply(null).matches(includeUnknown);
               }
 
               for (String dimensionValue : dimensionValues) {
-                if (predicate.apply(NullHandling.emptyToNullIfNeeded(dimensionValue))) {
+                final String coerced = NullHandling.emptyToNullIfNeeded(dimensionValue);
+                if (predicate.apply(coerced).matches(includeUnknown)) {
                   return true;
                 }
               }
@@ -272,7 +289,7 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
             public void inspectRuntimeShape(RuntimeShapeInspector inspector)
             {
               inspector.visit("row", rowSupplier);
-              inspector.visit("predicate", predicate);
+              inspector.visit("predicate", predicateFactory);
               inspector.visit("extractionFn", extractionFn);
             }
           };
@@ -331,7 +348,7 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
 
         private void updateCurrentValues()
         {
-          if (rowIdSupplier == null || rowIdSupplier.getAsLong() != currentId) {
+          if (rowIdSupplier == null || rowIdSupplier.getRowId() != currentId) {
             try {
               final Object rawValue = dimFunction.apply(rowSupplier.get());
 
@@ -344,19 +361,26 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
                   dimensionValues = Collections.singletonList(extractionFn.apply(s));
                 }
               } else if (rawValue instanceof List) {
-                // Consistent behavior with Rows.objectToStrings, but applies extractionFn too.
                 //noinspection rawtypes
                 final List<String> values = new ArrayList<>(((List) rawValue).size());
 
                 //noinspection rawtypes
                 for (final Object item : ((List) rawValue)) {
+                  final String itemString;
+
+                  if (useStringValueOfNullInLists) {
+                    itemString = String.valueOf(item);
+                  } else {
+                    itemString = item == null ? null : String.valueOf(item);
+                  }
+
                   // Behavior with null item is to convert it to string "null". This is not what most other areas of Druid
                   // would do when treating a null as a string, but it's consistent with Rows.objectToStrings, which is
                   // commonly used when retrieving strings from input-row-like objects.
                   if (extractionFn == null) {
-                    values.add(String.valueOf(item));
+                    values.add(itemString);
                   } else {
-                    values.add(extractionFn.apply(String.valueOf(item)));
+                    values.add(extractionFn.apply(itemString));
                   }
                 }
 
@@ -377,12 +401,12 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
               }
             }
             catch (Throwable e) {
-              currentId = NO_ID;
+              currentId = RowIdSupplier.INIT;
               throw e;
             }
 
             if (rowIdSupplier != null) {
-              currentId = rowIdSupplier.getAsLong();
+              currentId = rowIdSupplier.getRowId();
             }
           }
         }
@@ -420,44 +444,56 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
       return new TimeLongColumnSelector();
     } else {
       final Function<T, Object> columnFunction = adapter.columnFunction(columnName);
+      final ColumnCapabilities capabilities = columnInspector.getColumnCapabilities(columnName);
+      final ValueType numberType =
+          capabilities != null && capabilities.getType().isNumeric() ? capabilities.getType() : null;
 
-      return new ColumnValueSelector<Object>()
+      return new ColumnValueSelector<>()
       {
+        private long currentValueId = RowIdSupplier.INIT;
+        private long currentValueAsNumberId = RowIdSupplier.INIT;
+        @Nullable
+        private Object currentValue;
+        @Nullable
+        private Number currentValueAsNumber;
+
         @Override
         public boolean isNull()
         {
-          return !NullHandling.replaceWithDefault() && getCurrentValueAsNumber() == null;
+          updateCurrentValueAsNumber();
+          return !NullHandling.replaceWithDefault() && currentValueAsNumber == null;
         }
 
         @Override
         public double getDouble()
         {
-          final Number n = getCurrentValueAsNumber();
-          assert NullHandling.replaceWithDefault() || n != null;
-          return n != null ? n.doubleValue() : 0d;
+          updateCurrentValueAsNumber();
+          assert NullHandling.replaceWithDefault() || currentValueAsNumber != null;
+          return currentValueAsNumber != null ? currentValueAsNumber.doubleValue() : 0d;
         }
 
         @Override
         public float getFloat()
         {
-          final Number n = getCurrentValueAsNumber();
-          assert NullHandling.replaceWithDefault() || n != null;
-          return n != null ? n.floatValue() : 0f;
+          updateCurrentValueAsNumber();
+          assert NullHandling.replaceWithDefault() || currentValueAsNumber != null;
+          return currentValueAsNumber != null ? currentValueAsNumber.floatValue() : 0f;
         }
 
         @Override
         public long getLong()
         {
-          final Number n = getCurrentValueAsNumber();
-          assert NullHandling.replaceWithDefault() || n != null;
-          return n != null ? n.longValue() : 0L;
+          updateCurrentValueAsNumber();
+          assert NullHandling.replaceWithDefault() || currentValueAsNumber != null;
+          return currentValueAsNumber != null ? currentValueAsNumber.longValue() : 0L;
         }
 
         @Nullable
         @Override
         public Object getObject()
         {
-          return getCurrentValue();
+          updateCurrentValue();
+          return currentValue;
         }
 
         @Override
@@ -472,23 +508,52 @@ public class RowBasedColumnSelectorFactory<T> implements ColumnSelectorFactory
           inspector.visit("row", rowSupplier);
         }
 
-        @Nullable
-        private Object getCurrentValue()
+        private void updateCurrentValue()
         {
-          return columnFunction.apply(rowSupplier.get());
+          if (rowIdSupplier == null || rowIdSupplier.getRowId() != currentValueId) {
+            try {
+              currentValue = columnFunction.apply(rowSupplier.get());
+            }
+            catch (Throwable e) {
+              currentValueId = RowIdSupplier.INIT;
+              throw e;
+            }
+
+            if (rowIdSupplier != null) {
+              currentValueId = rowIdSupplier.getRowId();
+            }
+          }
         }
 
-        @Nullable
-        private Number getCurrentValueAsNumber()
+        private void updateCurrentValueAsNumber()
         {
-          return Rows.objectToNumber(
-              columnName,
-              getCurrentValue(),
-              throwParseExceptions
-          );
+          updateCurrentValue();
+
+          if (rowIdSupplier == null || rowIdSupplier.getRowId() != currentValueAsNumberId) {
+            try {
+              final Object valueToUse =
+                  currentValue instanceof StructuredData ? ((StructuredData) currentValue).getValue() : currentValue;
+              currentValueAsNumber = Rows.objectToNumber(columnName, valueToUse, numberType, throwParseExceptions);
+            }
+            catch (Throwable e) {
+              currentValueAsNumberId = RowIdSupplier.INIT;
+              throw e;
+            }
+
+            if (rowIdSupplier != null) {
+              currentValueAsNumberId = rowIdSupplier.getRowId();
+            }
+          }
         }
       };
     }
+  }
+
+  @Nullable
+  @Override
+  public RowIdSupplier getRowIdSupplier()
+  {
+    return rowIdSupplier;
   }
 
   @Nullable

@@ -20,6 +20,7 @@
 package org.apache.druid.query.timeboundary;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import it.unimi.dsi.fastutil.bytes.ByteArrays;
 import org.apache.druid.java.util.common.DateTimes;
@@ -65,7 +66,7 @@ public class TimeBoundaryQuery extends BaseQuery<Result<TimeBoundaryResultValue>
       @JsonProperty("context") Map<String, Object> context
   )
   {
-    super(dataSource, querySegmentSpec == null ? DEFAULT_SEGMENT_SPEC : querySegmentSpec, false, context);
+    super(dataSource, querySegmentSpec == null ? DEFAULT_SEGMENT_SPEC : querySegmentSpec, context);
 
     this.dimFilter = dimFilter;
     this.bound = bound == null ? "" : bound;
@@ -79,6 +80,7 @@ public class TimeBoundaryQuery extends BaseQuery<Result<TimeBoundaryResultValue>
 
   @JsonProperty("filter")
   @Override
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public DimFilter getFilter()
   {
     return dimFilter;
@@ -196,6 +198,16 @@ public class TimeBoundaryQuery extends BaseQuery<Result<TimeBoundaryResultValue>
   boolean isMaxTime()
   {
     return bound.equalsIgnoreCase(MAX_TIME);
+  }
+
+  boolean needsMinTime()
+  {
+    return !isMaxTime();
+  }
+
+  boolean needsMaxTime()
+  {
+    return !isMinTime();
   }
 
   @Override

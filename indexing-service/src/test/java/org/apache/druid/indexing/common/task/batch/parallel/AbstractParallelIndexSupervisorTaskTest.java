@@ -22,7 +22,6 @@ package org.apache.druid.indexing.common.task.batch.parallel;
 import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.NamedType;
-import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -33,7 +32,7 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import org.apache.druid.client.ImmutableDruidDataSource;
 import org.apache.druid.client.coordinator.CoordinatorClient;
-import org.apache.druid.client.indexing.NoopIndexingServiceClient;
+import org.apache.druid.client.coordinator.NoopCoordinatorClient;
 import org.apache.druid.client.indexing.TaskStatusResponse;
 import org.apache.druid.data.input.InputFormat;
 import org.apache.druid.data.input.MaxSizeSplitHintSpec;
@@ -48,23 +47,25 @@ import org.apache.druid.indexer.TaskLocation;
 import org.apache.druid.indexer.TaskStatus;
 import org.apache.druid.indexer.TaskStatusPlus;
 import org.apache.druid.indexer.partitions.PartitionsSpec;
+import org.apache.druid.indexer.report.IngestionStatsAndErrors;
+import org.apache.druid.indexer.report.IngestionStatsAndErrorsTaskReport;
+import org.apache.druid.indexer.report.SingleFileTaskReportFileWriter;
+import org.apache.druid.indexer.report.TaskReport;
 import org.apache.druid.indexing.common.RetryPolicyConfig;
 import org.apache.druid.indexing.common.RetryPolicyFactory;
 import org.apache.druid.indexing.common.SegmentCacheManagerFactory;
-import org.apache.druid.indexing.common.TaskInfoProvider;
 import org.apache.druid.indexing.common.TaskToolbox;
 import org.apache.druid.indexing.common.TestUtils;
 import org.apache.druid.indexing.common.actions.TaskActionClient;
 import org.apache.druid.indexing.common.config.TaskConfig;
+import org.apache.druid.indexing.common.config.TaskConfigBuilder;
 import org.apache.druid.indexing.common.stats.DropwizardRowIngestionMetersFactory;
 import org.apache.druid.indexing.common.task.CompactionTask;
-import org.apache.druid.indexing.common.task.IndexTaskClientFactory;
 import org.apache.druid.indexing.common.task.IngestionTestBase;
-import org.apache.druid.indexing.common.task.NoopTestTaskReportFileWriter;
 import org.apache.druid.indexing.common.task.Task;
-import org.apache.druid.indexing.common.task.TaskResource;
 import org.apache.druid.indexing.common.task.Tasks;
 import org.apache.druid.indexing.common.task.TestAppenderatorsManager;
+import org.apache.druid.indexing.common.task.TuningConfigBuilder;
 import org.apache.druid.indexing.overlord.Segments;
 import org.apache.druid.indexing.worker.config.WorkerConfig;
 import org.apache.druid.indexing.worker.shuffle.IntermediaryDataManager;
@@ -76,12 +77,15 @@ import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.java.util.common.logger.Logger;
+import org.apache.druid.java.util.metrics.StubServiceEmitter;
 import org.apache.druid.math.expr.ExprMacroTable;
-import org.apache.druid.metadata.EntryExistsException;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.expression.LookupEnabledTestExprMacroTable;
+import org.apache.druid.rpc.indexing.NoopOverlordClient;
+import org.apache.druid.segment.DataSegmentsWithSchemas;
 import org.apache.druid.segment.IndexIO;
+import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.incremental.ParseExceptionReport;
 import org.apache.druid.segment.incremental.RowIngestionMetersFactory;
 import org.apache.druid.segment.incremental.RowIngestionMetersTotals;
@@ -91,10 +95,11 @@ import org.apache.druid.segment.loading.LocalDataSegmentPusher;
 import org.apache.druid.segment.loading.LocalDataSegmentPusherConfig;
 import org.apache.druid.segment.loading.NoopDataSegmentKiller;
 import org.apache.druid.segment.loading.StorageLocationConfig;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
+import org.apache.druid.segment.realtime.ChatHandlerProvider;
+import org.apache.druid.segment.realtime.NoopChatHandlerProvider;
 import org.apache.druid.segment.realtime.appenderator.AppenderatorsManager;
 import org.apache.druid.segment.realtime.appenderator.SegmentIdWithShardSpec;
-import org.apache.druid.segment.realtime.firehose.ChatHandlerProvider;
-import org.apache.druid.segment.realtime.firehose.NoopChatHandlerProvider;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.security.AuthConfig;
 import org.apache.druid.server.security.AuthTestUtils;
@@ -111,14 +116,13 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.rules.TemporaryFolder;
+import org.junit.rules.TestName;
 
 import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -126,6 +130,7 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -158,42 +163,14 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       null,
       false,
       false,
-      0
+      0,
+      null
   );
   public static final ParallelIndexTuningConfig DEFAULT_TUNING_CONFIG_FOR_PARALLEL_INDEXING =
-      new ParallelIndexTuningConfig(
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          2,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          5,
-          null,
-          null,
-          null
-      );
+      TuningConfigBuilder.forParallelIndexTask()
+                         .withMaxNumConcurrentSubTasks(2)
+                         .withMaxSavedParseExceptions(5)
+                         .build();
 
   protected static final double DEFAULT_TRANSIENT_TASK_FAILURE_RATE = 0.2;
   protected static final double DEFAULT_TRANSIENT_API_FAILURE_RATE = 0.2;
@@ -202,6 +179,9 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
 
   @Rule
   public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+  @Rule
+  public final TestName testName = new TestName();
 
   /**
    * Transient task failure rate emulated by the taskKiller in {@link SimpleThreadingTaskRunner}.
@@ -222,7 +202,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
   private File localDeepStorage;
   private SimpleThreadingTaskRunner taskRunner;
   private ObjectMapper objectMapper;
-  private LocalIndexingServiceClient indexingServiceClient;
+  private LocalOverlordClient indexingServiceClient;
   private IntermediaryDataManager intermediaryDataManager;
   private CoordinatorClient coordinatorClient;
   // An executor that executes API calls using a different thread from the caller thread as if they were remote calls.
@@ -241,28 +221,13 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
   public void setUpAbstractParallelIndexSupervisorTaskTest() throws IOException
   {
     localDeepStorage = temporaryFolder.newFolder("localStorage");
-    taskRunner = new SimpleThreadingTaskRunner();
+    taskRunner = new SimpleThreadingTaskRunner(testName.getMethodName());
     objectMapper = getObjectMapper();
-    indexingServiceClient = new LocalIndexingServiceClient(objectMapper, taskRunner);
-    intermediaryDataManager = new LocalIntermediaryDataManager(
-        new WorkerConfig(),
-        new TaskConfig(
-            null,
-            null,
-            null,
-            null,
-            null,
-            false,
-            null,
-            null,
-            ImmutableList.of(new StorageLocationConfig(temporaryFolder.newFolder(), null, null)),
-            false,
-            false,
-            TaskConfig.BATCH_PROCESSING_MODE_DEFAULT.name(),
-            null
-        ),
-        null
-    );
+    indexingServiceClient = new LocalOverlordClient(objectMapper, taskRunner);
+    final TaskConfig taskConfig = new TaskConfigBuilder()
+        .setShuffleDataLocations(ImmutableList.of(new StorageLocationConfig(temporaryFolder.newFolder(), null, null)))
+        .build();
+    intermediaryDataManager = new LocalIntermediaryDataManager(new WorkerConfig(), taskConfig, null);
     remoteApiExecutor = Execs.singleThreaded("coordinator-api-executor");
     coordinatorClient = new LocalCoordinatorClient(remoteApiExecutor);
     prepareObjectMapper(objectMapper, getIndexIO());
@@ -282,42 +247,16 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       boolean forceGuaranteedRollup
   )
   {
-    return new ParallelIndexTuningConfig(
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        new MaxSizeSplitHintSpec(null, 1),
-        partitionsSpec,
-        null,
-        null,
-        null,
-        forceGuaranteedRollup,
-        null,
-        null,
-        null,
-        null,
-        maxNumConcurrentSubTasks,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        5,
-        null,
-        null,
-        null
-    );
+    return TuningConfigBuilder.forParallelIndexTask()
+                              .withSplitHintSpec(new MaxSizeSplitHintSpec(null, 1))
+                              .withPartitionsSpec(partitionsSpec)
+                              .withForceGuaranteedRollup(forceGuaranteedRollup)
+                              .withMaxNumConcurrentSubTasks(maxNumConcurrentSubTasks)
+                              .withMaxParseExceptions(5)
+                              .build();
   }
 
-  protected LocalIndexingServiceClient getIndexingServiceClient()
+  protected LocalOverlordClient getIndexingServiceClient()
   {
     return indexingServiceClient;
   }
@@ -359,15 +298,16 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
   public class SimpleThreadingTaskRunner
   {
     private final ConcurrentMap<String, TaskContainer> tasks = new ConcurrentHashMap<>();
-    private final ListeningExecutorService service = MoreExecutors.listeningDecorator(
-        Execs.multiThreaded(5, "simple-threading-task-runner-%d")
-    );
+    private final ListeningExecutorService service;
 
     private final ScheduledExecutorService taskKiller = Execs.scheduledSingleThreaded("simple-threading-task-killer");
     private final Set<String> killedSubtaskSpecs = new HashSet<>();
+    private volatile boolean useTaskFinishLatches = false;
+    private final List<CountDownLatch> allTaskLatches = new ArrayList<>();
 
-    SimpleThreadingTaskRunner()
+    SimpleThreadingTaskRunner(String threadNameBase)
     {
+      service = MoreExecutors.listeningDecorator(Execs.multiThreaded(5, threadNameBase + "-%d"));
       taskKiller.scheduleAtFixedRate(
           () -> {
             for (TaskContainer taskContainer : tasks.values()) {
@@ -400,22 +340,17 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       taskKiller.shutdownNow();
     }
 
-    public String run(Task task)
-    {
-      runTask(task);
-      return task.getId();
-    }
-
     private TaskStatus runAndWait(Task task)
     {
       try {
-        return runTask(task).get();
+        // 20 minutes should be enough for the tasks to finish.
+        return runTask(task).get(20, TimeUnit.MINUTES);
       }
       catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new RuntimeException(e);
       }
-      catch (ExecutionException e) {
+      catch (ExecutionException | TimeoutException e) {
         throw new RuntimeException(e);
       }
     }
@@ -446,18 +381,33 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       return tasks.get(taskId);
     }
 
+    private void setUseTaskFinishLatches(boolean useLatches)
+    {
+      this.useTaskFinishLatches = useLatches;
+      if (!useLatches) {
+        countDownAllTaskLatches();
+      }
+    }
+
+    private void countDownAllTaskLatches()
+    {
+      allTaskLatches.forEach(latch -> {
+        if (latch.getCount() > 0) {
+          latch.countDown();
+        }
+      });
+    }
+
     private Future<TaskStatus> runTask(Task task)
     {
+      final CountDownLatch taskFinishLatch = useTaskFinishLatches ? new CountDownLatch(1) : new CountDownLatch(0);
+      allTaskLatches.add(taskFinishLatch);
+
       final TaskContainer taskContainer = new TaskContainer(task);
       if (tasks.put(task.getId(), taskContainer) != null) {
         throw new ISE("Duplicate task ID[%s]", task.getId());
       }
-      try {
-        prepareTaskForLocking(task);
-      }
-      catch (EntryExistsException e) {
-        throw new RuntimeException(e);
-      }
+      prepareTaskForLocking(task);
       task.addToContextIfAbsent(
           SinglePhaseParallelIndexTaskRunner.CTX_USE_LINEAGE_BASED_SEGMENT_ALLOCATION_KEY,
           SinglePhaseParallelIndexTaskRunner.DEFAULT_USE_LINEAGE_BASED_SEGMENT_ALLOCATION
@@ -469,7 +419,9 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
               final TaskToolbox toolbox = createTaskToolbox(task, actionClient);
               taskContainer.setActionClient(actionClient);
               if (task.isReady(toolbox.getTaskActionClient())) {
-                return task.run(toolbox);
+                TaskStatus status = task.run(toolbox);
+                taskFinishLatch.await();
+                return status;
               } else {
                 getTaskStorage().setStatus(TaskStatus.failure(task.getId(), "Dummy task status failure for testing"));
                 throw new ISE("task[%s] is not ready", task.getId());
@@ -484,23 +436,20 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       taskContainer.setStatusFuture(statusFuture);
       final ListenableFuture<TaskStatus> cleanupFuture = Futures.transform(
           statusFuture,
-          (Function<TaskStatus, TaskStatus>) status -> {
+          status -> {
             shutdownTask(task);
             return status;
-          }
+          },
+          MoreExecutors.directExecutor()
       );
       return cleanupFuture;
     }
 
-    @Nullable
-    public String cancel(String taskId)
+    private void cancel(String taskId)
     {
       final TaskContainer taskContainer = tasks.remove(taskId);
       if (taskContainer != null && taskContainer.statusFuture != null) {
         taskContainer.statusFuture.cancel(true);
-        return taskId;
-      } else {
-        return null;
       }
     }
 
@@ -527,48 +476,70 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       }
     }
 
-    public Set<DataSegment> getPublishedSegments(String taskId)
+    public DataSegmentsWithSchemas getPublishedSegmentsWithSchemas(String taskId)
     {
       final TaskContainer taskContainer = tasks.get(taskId);
       if (taskContainer == null || taskContainer.actionClient == null) {
-        return Collections.emptySet();
+        return new DataSegmentsWithSchemas(CentralizedDatasourceSchemaConfig.SCHEMA_VERSION);
       } else {
-        return taskContainer.actionClient.getPublishedSegments();
+        return new DataSegmentsWithSchemas(taskContainer.actionClient.getPublishedSegments(), taskContainer.actionClient.getSegmentSchemas());
       }
     }
   }
 
-  public class LocalIndexingServiceClient extends NoopIndexingServiceClient
+  public class LocalOverlordClient extends NoopOverlordClient
   {
     private final ObjectMapper objectMapper;
     private final SimpleThreadingTaskRunner taskRunner;
 
-    public LocalIndexingServiceClient(ObjectMapper objectMapper, SimpleThreadingTaskRunner taskRunner)
+    public LocalOverlordClient(ObjectMapper objectMapper, SimpleThreadingTaskRunner taskRunner)
     {
       this.objectMapper = objectMapper;
       this.taskRunner = taskRunner;
     }
 
     @Override
-    public String runTask(String taskId, Object taskObject)
+    public ListenableFuture<Void> runTask(String taskId, Object taskObject)
     {
       final Task task = (Task) taskObject;
-      return taskRunner.run(injectIfNeeded(task));
+      taskRunner.runTask(injectIfNeeded(task));
+      return Futures.immediateFuture(null);
     }
 
     @Override
-    public Map<String, Object> getTaskReport(String taskId)
+    public ListenableFuture<TaskReport.ReportMap> taskReportAsMap(String taskId)
     {
-      final Optional<Task> task = getTaskStorage().getTask(taskId);
-      if (!task.isPresent()) {
+      return Futures.immediateFuture(getLiveReportsForTask(taskId));
+    }
+
+    private TaskReport.ReportMap getLiveReportsForTask(String taskId)
+    {
+      final Optional<Task> taskOptional = getTaskStorage().getTask(taskId);
+      if (!taskOptional.isPresent()) {
         return null;
       }
-      return ((ParallelIndexSupervisorTask) task.get()).doGetLiveReports("full");
+
+      final Task task = taskOptional.get();
+      if (task instanceof SinglePhaseSubTask) {
+        return ((SinglePhaseSubTask) task).doGetLiveReports(true);
+      } else {
+        return ((ParallelIndexSupervisorTask) task).doGetLiveReports(true);
+      }
     }
 
     public TaskContainer getTaskContainer(String taskId)
     {
       return taskRunner.getTaskContainer(taskId);
+    }
+
+    public void keepTasksRunning()
+    {
+      taskRunner.setUseTaskFinishLatches(true);
+    }
+
+    public void allowTasksToFinish()
+    {
+      taskRunner.setUseTaskFinishLatches(false);
     }
 
     public TaskStatus runAndWait(Task task)
@@ -598,13 +569,14 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
     }
 
     @Override
-    public String cancelTask(String taskId)
+    public ListenableFuture<Void> cancelTask(String taskId)
     {
-      return taskRunner.cancel(taskId);
+      taskRunner.cancel(taskId);
+      return Futures.immediateFuture(null);
     }
 
     @Override
-    public TaskStatusResponse getTaskStatus(String taskId)
+    public ListenableFuture<TaskStatusResponse> taskStatus(String taskId)
     {
       final Optional<Task> task = getTaskStorage().getTask(taskId);
       final String groupId = task.isPresent() ? task.get().getGroupId() : null;
@@ -612,7 +584,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       final TaskStatus taskStatus = taskRunner.getStatus(taskId);
 
       if (taskStatus != null) {
-        return new TaskStatusResponse(
+        final TaskStatusResponse retVal = new TaskStatusResponse(
             taskId,
             new TaskStatusPlus(
                 taskId,
@@ -628,34 +600,23 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
                 null
             )
         );
+
+        return Futures.immediateFuture(retVal);
       } else {
-        return new TaskStatusResponse(taskId, null);
+        return Futures.immediateFuture(new TaskStatusResponse(taskId, null));
       }
     }
 
-    public Set<DataSegment> getPublishedSegments(Task task)
+    public DataSegmentsWithSchemas getSegmentAndSchemas(Task task)
     {
-      return taskRunner.getPublishedSegments(task.getId());
+      return taskRunner.getPublishedSegmentsWithSchemas(task.getId());
     }
   }
 
   public void prepareObjectMapper(ObjectMapper objectMapper, IndexIO indexIO)
   {
-    final TaskConfig taskConfig = new TaskConfig(
-        null,
-        null,
-        null,
-        null,
-        null,
-        false,
-        null,
-        null,
-        null,
-        false,
-        false,
-        TaskConfig.BATCH_PROCESSING_MODE_DEFAULT.name(),
-        null
-    );
+    final TaskConfig taskConfig = new TaskConfigBuilder()
+        .build();
 
     objectMapper.setInjectableValues(
         new InjectableValues.Std()
@@ -671,7 +632,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
             .addValue(AppenderatorsManager.class, TestUtils.APPENDERATORS_MANAGER)
             .addValue(LocalDataSegmentPuller.class, new LocalDataSegmentPuller())
             .addValue(CoordinatorClient.class, coordinatorClient)
-            .addValue(SegmentCacheManagerFactory.class, new SegmentCacheManagerFactory(objectMapper))
+            .addValue(SegmentCacheManagerFactory.class, new SegmentCacheManagerFactory(TestIndex.INDEX_IO, objectMapper))
             .addValue(RetryPolicyFactory.class, new RetryPolicyFactory(new RetryPolicyConfig()))
             .addValue(TaskConfig.class, taskConfig)
     );
@@ -689,87 +650,47 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
 
   protected TaskToolbox createTaskToolbox(Task task, TaskActionClient actionClient) throws IOException
   {
-    return new TaskToolbox(
-        new TaskConfig(
-            null,
-            null,
-            null,
-            null,
-            null,
-            false,
-            null,
-            null,
-            null,
-            false,
-            false,
-            TaskConfig.BATCH_PROCESSING_MODE_DEFAULT.name(),
-            null
-        ),
-        new DruidNode("druid/middlemanager", "localhost", false, 8091, null, true, false),
-        actionClient,
-        null,
-        new LocalDataSegmentPusher(
-            new LocalDataSegmentPusherConfig()
-            {
-              @Override
-              public File getStorageDirectory()
-              {
-                return localDeepStorage;
-              }
-            }
-        ),
-        new NoopDataSegmentKiller(),
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        NoopJoinableFactory.INSTANCE,
-        null,
-        newSegmentLoader(temporaryFolder.newFolder()),
-        objectMapper,
-        temporaryFolder.newFolder(task.getId()),
-        getIndexIO(),
-        null,
-        null,
-        null,
-        getIndexMergerV9Factory().create(task.getContextValue(Tasks.STORE_EMPTY_COLUMNS_KEY, true)),
-        null,
-        null,
-        null,
-        null,
-        new NoopTestTaskReportFileWriter(),
-        intermediaryDataManager,
-        AuthTestUtils.TEST_AUTHORIZER_MAPPER,
-        new NoopChatHandlerProvider(),
-        new TestUtils().getRowIngestionMetersFactory(),
-        new TestAppenderatorsManager(),
-        indexingServiceClient,
-        coordinatorClient,
-        new LocalParallelIndexTaskClientFactory(taskRunner, transientApiCallFailureRate),
-        new LocalShuffleClient(intermediaryDataManager)
-    );
-  }
-
-  static class TestParallelIndexSupervisorTask extends ParallelIndexSupervisorTask
-  {
-    TestParallelIndexSupervisorTask(
-        String id,
-        TaskResource taskResource,
-        ParallelIndexIngestionSpec ingestionSchema,
-        Map<String, Object> context
-    )
-    {
-      super(
-          id,
-          null,
-          taskResource,
-          ingestionSchema,
-          context
-      );
-    }
+    TaskConfig config = new TaskConfigBuilder()
+        .build();
+    CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig = CentralizedDatasourceSchemaConfig.create(true);
+    return new TaskToolbox.Builder()
+        .config(config)
+        .taskExecutorNode(new DruidNode("druid/middlemanager", "localhost", false, 8091, null, true, false))
+        .taskActionClient(actionClient)
+        .segmentPusher(
+            new LocalDataSegmentPusher(
+                new LocalDataSegmentPusherConfig()
+                {
+                  @Override
+                  public File getStorageDirectory()
+                  {
+                    return localDeepStorage;
+                  }
+                }
+            )
+        )
+        .dataSegmentKiller(new NoopDataSegmentKiller())
+        .joinableFactory(NoopJoinableFactory.INSTANCE)
+        .segmentCacheManager(newSegmentLoader(temporaryFolder.newFolder()))
+        .jsonMapper(objectMapper)
+        .taskWorkDir(temporaryFolder.newFolder(task.getId()))
+        .indexIO(getIndexIO())
+        .indexMergerV9(getIndexMergerV9Factory().create(task.getContextValue(Tasks.STORE_EMPTY_COLUMNS_KEY, true)))
+        .intermediaryDataManager(intermediaryDataManager)
+        .taskReportFileWriter(new SingleFileTaskReportFileWriter(reportsFile))
+        .authorizerMapper(AuthTestUtils.TEST_AUTHORIZER_MAPPER)
+        .chatHandlerProvider(new NoopChatHandlerProvider())
+        .rowIngestionMetersFactory(new TestUtils().getRowIngestionMetersFactory())
+        .appenderatorsManager(new TestAppenderatorsManager())
+        .overlordClient(indexingServiceClient)
+        .coordinatorClient(coordinatorClient)
+        .supervisorTaskClientProvider(new LocalParallelIndexTaskClientProvider(taskRunner, transientApiCallFailureRate))
+        .shuffleClient(new LocalShuffleClient(intermediaryDataManager))
+        .taskLogPusher(null)
+        .attemptId("1")
+        .emitter(new StubServiceEmitter())
+        .centralizedTableSchemaConfig(centralizedDatasourceSchemaConfig)
+        .build();
   }
 
   static class LocalShuffleClient implements ShuffleClient<GenericPartitionLocation>
@@ -816,22 +737,19 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
     }
   }
 
-  protected Map<String, Object> buildExpectedTaskReportSequential(
+  protected TaskReport.ReportMap buildExpectedTaskReportSequential(
       String taskId,
       List<ParseExceptionReport> expectedUnparseableEvents,
       RowIngestionMetersTotals expectedDeterminePartitions,
       RowIngestionMetersTotals expectedTotals
   )
   {
-    final Map<String, Object> payload = new HashMap<>();
+    final Map<String, Object> unparseableEvents =
+        ImmutableMap.of("determinePartitions", ImmutableList.of(), "buildSegments", expectedUnparseableEvents);
 
-    payload.put("ingestionState", IngestionState.COMPLETED);
-    payload.put(
-        "unparseableEvents",
-        ImmutableMap.of("determinePartitions", ImmutableList.of(), "buildSegments", expectedUnparseableEvents)
-    );
     Map<String, Object> emptyAverageMinuteMap = ImmutableMap.of(
         "processed", 0.0,
+        "processedBytes", 0.0,
         "unparseable", 0.0,
         "thrownAway", 0.0,
         "processedWithError", 0.0
@@ -843,70 +761,89 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
         "15m", emptyAverageMinuteMap
     );
 
-    payload.put(
-        "rowStats",
-        ImmutableMap.of(
-            "movingAverages",
-            ImmutableMap.of("determinePartitions", emptyAverages, "buildSegments", emptyAverages),
-            "totals",
-            ImmutableMap.of("determinePartitions", expectedDeterminePartitions, "buildSegments", expectedTotals)
-        )
+    final Map<String, Object> rowStats = ImmutableMap.of(
+        "movingAverages",
+        ImmutableMap.of("determinePartitions", emptyAverages, "buildSegments", emptyAverages),
+        "totals",
+        ImmutableMap.of("determinePartitions", expectedDeterminePartitions, "buildSegments", expectedTotals)
     );
 
-    final Map<String, Object> ingestionStatsAndErrors = new HashMap<>();
-    ingestionStatsAndErrors.put("taskId", taskId);
-    ingestionStatsAndErrors.put("payload", payload);
-    ingestionStatsAndErrors.put("type", "ingestionStatsAndErrors");
-
-    return Collections.singletonMap("ingestionStatsAndErrors", ingestionStatsAndErrors);
+    return TaskReport.buildTaskReports(
+        new IngestionStatsAndErrorsTaskReport(
+            taskId,
+            new IngestionStatsAndErrors(
+                IngestionState.COMPLETED,
+                unparseableEvents,
+                rowStats,
+                null,
+                false,
+                0L,
+                null,
+                null,
+                null
+            )
+        )
+    );
   }
 
-  protected Map<String, Object> buildExpectedTaskReportParallel(
+  protected TaskReport.ReportMap buildExpectedTaskReportParallel(
       String taskId,
       List<ParseExceptionReport> expectedUnparseableEvents,
       RowIngestionMetersTotals expectedTotals
   )
   {
-    Map<String, Object> returnMap = new HashMap<>();
-    Map<String, Object> ingestionStatsAndErrors = new HashMap<>();
-    Map<String, Object> payload = new HashMap<>();
-
-    payload.put("ingestionState", IngestionState.COMPLETED);
-    payload.put("unparseableEvents", ImmutableMap.of("buildSegments", expectedUnparseableEvents));
-    payload.put("rowStats", ImmutableMap.of("totals", ImmutableMap.of("buildSegments", expectedTotals)));
-
-    ingestionStatsAndErrors.put("taskId", taskId);
-    ingestionStatsAndErrors.put("payload", payload);
-    ingestionStatsAndErrors.put("type", "ingestionStatsAndErrors");
-
-    returnMap.put("ingestionStatsAndErrors", ingestionStatsAndErrors);
-    return returnMap;
+    Map<String, Object> unparseableEvents = ImmutableMap.of("buildSegments", expectedUnparseableEvents);
+    Map<String, Object> rowStats = ImmutableMap.of("totals", ImmutableMap.of("buildSegments", expectedTotals));
+    return TaskReport.buildTaskReports(
+        new IngestionStatsAndErrorsTaskReport(
+            taskId,
+            new IngestionStatsAndErrors(
+                IngestionState.COMPLETED,
+                unparseableEvents,
+                rowStats,
+                null,
+                false,
+                0L,
+                null,
+                null,
+                null
+            )
+        )
+    );
   }
 
   protected void compareTaskReports(
-      Map<String, Object> expectedReports,
-      Map<String, Object> actualReports
+      TaskReport.ReportMap expectedReports,
+      TaskReport.ReportMap actualReports
   )
   {
-    expectedReports = (Map<String, Object>) expectedReports.get("ingestionStatsAndErrors");
-    actualReports = (Map<String, Object>) actualReports.get("ingestionStatsAndErrors");
+    final java.util.Optional<IngestionStatsAndErrorsTaskReport> expectedReportOptional
+        = expectedReports.findReport("ingestionStatsAndErrors");
+    final java.util.Optional<IngestionStatsAndErrorsTaskReport> actualReportOptional
+        = actualReports.findReport("ingestionStatsAndErrors");
 
-    Assert.assertEquals(expectedReports.get("taskId"), actualReports.get("taskId"));
-    Assert.assertEquals(expectedReports.get("type"), actualReports.get("type"));
+    Assert.assertTrue(expectedReportOptional.isPresent());
+    Assert.assertTrue(actualReportOptional.isPresent());
 
-    Map<String, Object> expectedPayload = (Map<String, Object>) expectedReports.get("payload");
-    Map<String, Object> actualPayload = (Map<String, Object>) actualReports.get("payload");
-    Assert.assertEquals(expectedPayload.get("ingestionState"), actualPayload.get("ingestionState"));
-    Assert.assertEquals(expectedPayload.get("rowStats"), actualPayload.get("rowStats"));
-    Assert.assertEquals(expectedPayload.get("ingestionState"), actualPayload.get("ingestionState"));
+    final IngestionStatsAndErrorsTaskReport expectedReport = expectedReportOptional.get();
+    final IngestionStatsAndErrorsTaskReport actualReport = actualReportOptional.get();
+
+    Assert.assertEquals(expectedReport.getTaskId(), actualReport.getTaskId());
+    Assert.assertEquals(expectedReport.getReportKey(), actualReport.getReportKey());
+
+    final IngestionStatsAndErrors expectedPayload = expectedReport.getPayload();
+    final IngestionStatsAndErrors actualPayload = actualReport.getPayload();
+    Assert.assertEquals(expectedPayload.getIngestionState(), actualPayload.getIngestionState());
+
+    Map<String, Object> expectedTotals = expectedPayload.getRowStats();
+    Map<String, Object> actualTotals = actualPayload.getRowStats();
+    Assert.assertEquals(expectedTotals, actualTotals);
 
     List<ParseExceptionReport> expectedParseExceptionReports =
-        (List<ParseExceptionReport>) ((Map<String, Object>)
-            expectedPayload.get("unparseableEvents")).get("buildSegments");
+        (List<ParseExceptionReport>) (expectedPayload.getUnparseableEvents()).get("buildSegments");
 
     List<ParseExceptionReport> actualParseExceptionReports =
-        (List<ParseExceptionReport>) ((Map<String, Object>)
-            actualPayload.get("unparseableEvents")).get("buildSegments");
+        (List<ParseExceptionReport>) (actualPayload.getUnparseableEvents()).get("buildSegments");
 
     List<String> expectedMessages = expectedParseExceptionReports
         .stream().map(r -> r.getDetails().get(0)).collect(Collectors.toList());
@@ -921,50 +858,45 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
     Assert.assertEquals(expectedInputs, actualInputs);
   }
 
-  static class LocalParallelIndexTaskClientFactory implements IndexTaskClientFactory<ParallelIndexSupervisorTaskClient>
+  static class LocalParallelIndexTaskClientProvider implements ParallelIndexSupervisorTaskClientProvider
   {
     private final ConcurrentMap<String, TaskContainer> tasks;
     private final double transientApiCallFailureRate;
 
-    LocalParallelIndexTaskClientFactory(SimpleThreadingTaskRunner taskRunner, double transientApiCallFailureRate)
+    LocalParallelIndexTaskClientProvider(SimpleThreadingTaskRunner taskRunner, double transientApiCallFailureRate)
     {
       this.tasks = taskRunner.tasks;
       this.transientApiCallFailureRate = transientApiCallFailureRate;
     }
 
     @Override
-    public ParallelIndexSupervisorTaskClient build(
-        TaskInfoProvider taskInfoProvider,
-        String callerId,
-        int numThreads,
-        Duration httpTimeout,
-        long numRetries
-    )
+    public ParallelIndexSupervisorTaskClient build(String supervisorTaskId, Duration httpTimeout, long numRetries)
     {
-      return new LocalParallelIndexSupervisorTaskClient(callerId, tasks, transientApiCallFailureRate);
+      return new LocalParallelIndexSupervisorTaskClient(supervisorTaskId, tasks, transientApiCallFailureRate);
     }
   }
 
-  static class LocalParallelIndexSupervisorTaskClient extends ParallelIndexSupervisorTaskClient
+  static class LocalParallelIndexSupervisorTaskClient implements ParallelIndexSupervisorTaskClient
   {
     private static final int MAX_TRANSIENT_API_FAILURES = 3;
 
+    private final String supervisorTaskId;
     private final double transientFailureRate;
     private final ConcurrentMap<String, TaskContainer> tasks;
 
     LocalParallelIndexSupervisorTaskClient(
-        String callerId,
+        String supervisorTaskId,
         ConcurrentMap<String, TaskContainer> tasks,
         double transientFailureRate
     )
     {
-      super(null, null, null, null, callerId, 0);
+      this.supervisorTaskId = supervisorTaskId;
       this.tasks = tasks;
       this.transientFailureRate = transientFailureRate;
     }
 
     @Override
-    public SegmentIdWithShardSpec allocateSegment(String supervisorTaskId, DateTime timestamp) throws IOException
+    public SegmentIdWithShardSpec allocateSegment(DateTime timestamp) throws IOException
     {
       final TaskContainer taskContainer = tasks.get(supervisorTaskId);
       final ParallelIndexSupervisorTask supervisorTask = findSupervisorTask(taskContainer);
@@ -981,7 +913,6 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
 
     @Override
     public SegmentIdWithShardSpec allocateSegment(
-        String supervisorTaskId,
         DateTime timestamp,
         String sequenceName,
         @Nullable String prevSegmentId
@@ -1023,7 +954,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
     }
 
     @Override
-    public void report(String supervisorTaskId, SubTaskReport report)
+    public void report(SubTaskReport report)
     {
       final TaskContainer taskContainer = tasks.get(supervisorTaskId);
       final ParallelIndexSupervisorTask supervisorTask = findSupervisorTask(taskContainer);
@@ -1057,34 +988,30 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
     }
   }
 
-  class LocalCoordinatorClient extends CoordinatorClient
+  class LocalCoordinatorClient extends NoopCoordinatorClient
   {
-    private final ExecutorService exec;
+    private final ListeningExecutorService exec;
 
     LocalCoordinatorClient(ExecutorService exec)
     {
-      super(null, null);
-      this.exec = exec;
+      this.exec = MoreExecutors.listeningDecorator(exec);
     }
 
     @Override
-    public Collection<DataSegment> fetchUsedSegmentsInDataSourceForIntervals(
+    public ListenableFuture<List<DataSegment>> fetchUsedSegments(
         String dataSource,
         List<Interval> intervals
     )
     {
-      try {
-        return exec.submit(
-            () -> getStorageCoordinator().retrieveUsedSegmentsForIntervals(dataSource, intervals, Segments.ONLY_VISIBLE)
-        ).get();
-      }
-      catch (InterruptedException | ExecutionException e) {
-        throw new RuntimeException(e);
-      }
+      return exec.submit(
+          () -> ImmutableList.copyOf(
+              getStorageCoordinator().retrieveUsedSegmentsForIntervals(dataSource, intervals, Segments.ONLY_VISIBLE)
+          )
+      );
     }
 
     @Override
-    public DataSegment fetchUsedSegment(String dataSource, String segmentId)
+    public ListenableFuture<DataSegment> fetchSegment(String dataSource, String segmentId, boolean includeUnused)
     {
       ImmutableDruidDataSource druidDataSource;
       try {
@@ -1102,7 +1029,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       for (SegmentId possibleSegmentId : SegmentId.iteratePossibleParsingsWithDataSource(dataSource, segmentId)) {
         DataSegment segment = druidDataSource.getSegment(possibleSegmentId);
         if (segment != null) {
-          return segment;
+          return Futures.immediateFuture(segment);
         }
       }
       throw new ISE("Can't find segment for id[%s]", segmentId);

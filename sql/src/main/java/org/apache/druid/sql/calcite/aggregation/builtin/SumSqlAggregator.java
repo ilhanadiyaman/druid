@@ -19,29 +19,38 @@
 
 package org.apache.druid.sql.calcite.aggregation.builtin;
 
+import org.apache.calcite.linq4j.Nullness;
 import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.sql.SqlAggFunction;
-import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+import org.apache.calcite.sql.fun.SqlSumAggFunction;
 import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
 import org.apache.druid.query.aggregation.FloatSumAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.segment.column.ColumnType;
-import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.sql.calcite.aggregation.Aggregation;
 import org.apache.druid.sql.calcite.planner.Calcites;
-import org.apache.druid.sql.calcite.planner.UnsupportedSQLQueryException;
+
+import javax.annotation.Nullable;
 
 public class SumSqlAggregator extends SimpleSqlAggregator
 {
+  /**
+   * We use this custom aggregation function instead of builtin SqlStdOperatorTable.SUM
+   * to avoid transformation to COUNT+SUM0. See CALCITE-6020 for more details.
+   * It can be handled differently after CALCITE-6020 is addressed.
+   */
+  private static final SqlAggFunction DRUID_SUM = new SqlSumAggFunction(Nullness.castNonNull(null)) {};
+
   @Override
   public SqlAggFunction calciteFunction()
   {
-    return SqlStdOperatorTable.SUM;
+    return DRUID_SUM;
   }
 
   @Override
+  @Nullable
   Aggregation getAggregation(
       final String name,
       final AggregateCall aggregateCall,
@@ -53,17 +62,17 @@ public class SumSqlAggregator extends SimpleSqlAggregator
     if (valueType == null) {
       return null;
     }
-    return Aggregation.create(createSumAggregatorFactory(valueType.getType(), name, fieldName, macroTable));
+    return Aggregation.create(createSumAggregatorFactory(valueType, name, fieldName, macroTable));
   }
 
   static AggregatorFactory createSumAggregatorFactory(
-      final ValueType aggregationType,
+      final ColumnType aggregationType,
       final String name,
       final String fieldName,
       final ExprMacroTable macroTable
   )
   {
-    switch (aggregationType) {
+    switch (aggregationType.getType()) {
       case LONG:
         return new LongSumAggregatorFactory(name, fieldName, null, macroTable);
       case FLOAT:
@@ -71,7 +80,7 @@ public class SumSqlAggregator extends SimpleSqlAggregator
       case DOUBLE:
         return new DoubleSumAggregatorFactory(name, fieldName, null, macroTable);
       default:
-        throw new UnsupportedSQLQueryException("Sum aggregation is not supported for '%s' type", aggregationType);
+        throw SimpleSqlAggregator.badTypeException(fieldName, "SUM", aggregationType);
     }
   }
 }

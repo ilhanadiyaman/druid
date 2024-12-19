@@ -20,7 +20,6 @@
 package org.apache.druid.query.expression;
 
 import com.google.common.annotations.VisibleForTesting;
-import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.granularity.Granularity;
 import org.apache.druid.java.util.common.granularity.PeriodGranularity;
 import org.apache.druid.math.expr.Expr;
@@ -47,14 +46,12 @@ public class TimestampCeilExprMacro implements ExprMacroTable.ExprMacro
   @Override
   public Expr apply(final List<Expr> args)
   {
-    if (args.size() < 2 || args.size() > 4) {
-      throw new IAE("Function[%s] must have 2 to 4 arguments", name());
-    }
+    validationHelperCheckArgumentRange(args, 2, 4);
 
     if (args.stream().skip(1).allMatch(Expr::isLiteral)) {
-      return new TimestampCeilExpr(args);
+      return new TimestampCeilExpr(this, args);
     } else {
-      return new TimestampCeilDynamicExpr(args);
+      return new TimestampCeilDynamicExpr(this, args);
     }
   }
 
@@ -63,10 +60,10 @@ public class TimestampCeilExprMacro implements ExprMacroTable.ExprMacro
   {
     private final Granularity granularity;
 
-    TimestampCeilExpr(final List<Expr> args)
+    TimestampCeilExpr(final TimestampCeilExprMacro macro, final List<Expr> args)
     {
-      super(FN_NAME, args);
-      this.granularity = getGranularity(args, InputBindings.nilBindings());
+      super(macro, args);
+      this.granularity = getGranularity(this, args, InputBindings.nilBindings());
     }
 
     @Nonnull
@@ -84,12 +81,6 @@ public class TimestampCeilExprMacro implements ExprMacroTable.ExprMacro
         return ExprEval.of(bucketStartTime);
       }
       return ExprEval.of(granularity.increment(bucketStartTime));
-    }
-
-    @Override
-    public Expr visit(Shuttle shuttle)
-    {
-      return shuttle.visit(new TimestampCeilExpr(shuttle.visitAll(args)));
     }
 
     @Nullable
@@ -122,9 +113,14 @@ public class TimestampCeilExprMacro implements ExprMacroTable.ExprMacro
     }
   }
 
-  private static PeriodGranularity getGranularity(final List<Expr> args, final Expr.ObjectBinding bindings)
+  private static PeriodGranularity getGranularity(
+      final Expr expr,
+      final List<Expr> args,
+      final Expr.ObjectBinding bindings
+  )
   {
     return ExprUtils.toPeriodGranularity(
+        expr,
         args.get(1),
         args.size() > 2 ? args.get(2) : null,
         args.size() > 3 ? args.get(3) : null,
@@ -135,28 +131,22 @@ public class TimestampCeilExprMacro implements ExprMacroTable.ExprMacro
   @VisibleForTesting
   static class TimestampCeilDynamicExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
   {
-    TimestampCeilDynamicExpr(final List<Expr> args)
+    TimestampCeilDynamicExpr(final TimestampCeilExprMacro macro, final List<Expr> args)
     {
-      super(FN_NAME, args);
+      super(macro, args);
     }
 
     @Nonnull
     @Override
     public ExprEval eval(final ObjectBinding bindings)
     {
-      final PeriodGranularity granularity = getGranularity(args, bindings);
+      final PeriodGranularity granularity = getGranularity(this, args, bindings);
       long argTime = args.get(0).eval(bindings).asLong();
       long bucketStartTime = granularity.bucketStart(argTime);
       if (argTime == bucketStartTime) {
         return ExprEval.of(bucketStartTime);
       }
       return ExprEval.of(granularity.increment(bucketStartTime));
-    }
-
-    @Override
-    public Expr visit(Shuttle shuttle)
-    {
-      return shuttle.visit(new TimestampCeilDynamicExpr(shuttle.visitAll(args)));
     }
 
     @Nullable

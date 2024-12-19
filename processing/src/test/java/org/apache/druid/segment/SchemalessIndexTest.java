@@ -76,7 +76,7 @@ public class SchemalessIndexTest
       new CountAggregatorFactory("count")
   };
 
-  private static final IndexSpec INDEX_SPEC = new IndexSpec();
+  private static final IndexSpec INDEX_SPEC = IndexSpec.DEFAULT;
 
   private static final List<Map<String, Object>> EVENTS = new ArrayList<>();
 
@@ -88,7 +88,7 @@ public class SchemalessIndexTest
   private static QueryableIndex mergedIndex = null;
 
   static {
-    ComplexMetrics.registerSerde("hyperUnique", new HyperUniquesSerde());
+    ComplexMetrics.registerSerde(HyperUniquesSerde.TYPE_NAME, new HyperUniquesSerde());
   }
 
   private final IndexMerger indexMerger;
@@ -171,7 +171,7 @@ public class SchemalessIndexTest
 
         count++;
       }
-      QueryableIndex retVal = TestIndex.persistRealtimeAndLoadMMapped(theIndex);
+      QueryableIndex retVal = TestIndex.persistAndMemoryMap(theIndex);
       entry.put(index2, retVal);
       return retVal;
     }
@@ -310,8 +310,8 @@ public class SchemalessIndexTest
   {
     return getMergedIncrementalIndex(
         Arrays.asList(
-            new Pair<String, AggregatorFactory[]>("druid.sample.json.top", METRIC_AGGS_NO_UNIQ),
-            new Pair<String, AggregatorFactory[]>("druid.sample.json.bottom", METRIC_AGGS)
+            new Pair<>("druid.sample.json.top", METRIC_AGGS_NO_UNIQ),
+            new Pair<>("druid.sample.json.bottom", METRIC_AGGS)
         )
     );
   }
@@ -463,7 +463,7 @@ public class SchemalessIndexTest
               Lists.newArrayList(
                   Iterables.transform(
                       filesToMap,
-                      new Function<File, QueryableIndex>()
+                      new Function<>()
                       {
                         @Override
                         public QueryableIndex apply(@Nullable File input)

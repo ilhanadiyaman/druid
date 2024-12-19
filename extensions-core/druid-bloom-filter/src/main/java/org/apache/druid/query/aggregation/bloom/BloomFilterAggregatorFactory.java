@@ -137,12 +137,6 @@ public class BloomFilterAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(new BloomFilterAggregatorFactory(name, field, maxNumEntries));
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     if (object instanceof String) {
@@ -205,6 +199,12 @@ public class BloomFilterAggregatorFactory extends AggregatorFactory
   public int getMaxIntermediateSize()
   {
     return BloomKFilter.computeSizeBytes(maxNumEntries);
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new BloomFilterAggregatorFactory(newName, getField(), getMaxNumEntries());
   }
 
   @Override

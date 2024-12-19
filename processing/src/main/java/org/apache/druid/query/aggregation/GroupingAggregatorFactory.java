@@ -102,6 +102,20 @@ public class GroupingAggregatorFactory extends AggregatorFactory
   )
   {
     Preconditions.checkNotNull(name, "Must have a valid, non-null aggregator name");
+    Preconditions.checkArgument(!CollectionUtils.isNullOrEmpty(groupings), "Must have a non-empty grouping dimensions");
+    // (Long.SIZE - 1) is just a sanity check. In practice, it will be just few dimensions. This limit
+    // also makes sure that values are always positive.
+    Preconditions.checkArgument(
+        groupings.size() < Long.SIZE,
+        "Number of dimensions %s is more than supported %s",
+        groupings.size(),
+        Long.SIZE - 1
+    );
+    Preconditions.checkArgument(
+        groupings.stream().distinct().count() == groupings.size(),
+        "Encountered same dimension more than once in groupings"
+    );
+
     this.name = name;
     this.groupings = groupings;
     this.keyDimensions = keyDimensions;
@@ -181,12 +195,6 @@ public class GroupingAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(new GroupingAggregatorFactory(name, groupings, keyDimensions));
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     return object;
@@ -225,6 +233,12 @@ public class GroupingAggregatorFactory extends AggregatorFactory
   }
 
   @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new GroupingAggregatorFactory(newName, groupings, keyDimensions);
+  }
+
+  @Override
   public byte[] getCacheKey()
   {
     CacheKeyBuilder keyBuilder = new CacheKeyBuilder(AggregatorUtil.GROUPING_CACHE_TYPE_ID)
@@ -254,15 +268,6 @@ public class GroupingAggregatorFactory extends AggregatorFactory
    */
   private long groupingId(List<String> groupings, @Nullable Set<String> keyDimensions)
   {
-    Preconditions.checkArgument(!CollectionUtils.isNullOrEmpty(groupings), "Must have a non-empty grouping dimensions");
-    // (Long.SIZE - 1) is just a sanity check. In practice, it will be just few dimensions. This limit
-    // also makes sure that values are always positive.
-    Preconditions.checkArgument(
-        groupings.size() < Long.SIZE,
-        "Number of dimensions %s is more than supported %s",
-        groupings.size(),
-        Long.SIZE - 1
-    );
     long temp = 0L;
     for (String groupingDimension : groupings) {
       temp = temp << 1;

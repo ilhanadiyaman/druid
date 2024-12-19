@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.apache.druid</groupId>
         <artifactId>druid</artifactId>
-        <version>0.23.0-SNAPSHOT</version>
+        <version>32.0.0-SNAPSHOT</version>
     </parent>
 
     <repositories>
@@ -39,9 +39,22 @@
     </repositories>
 
     <properties>
-        <hadoop.integ.libs>"org.apache.hadoop:hadoop-client:${hadoop.compile.version}", "org.apache.hadoop:hadoop-azure:${hadoop.compile.version}"</hadoop.integ.libs>
-        <hadoop.s3.impl>org.apache.hadoop.fs.s3native.NativeS3FileSystem</hadoop.s3.impl>
+        <hadoop.integ.libs>"org.apache.hadoop:hadoop-client-api:${hadoop.compile.version}", "org.apache.hadoop:hadoop-client-runtime:${hadoop.compile.version}", "org.apache.hadoop:hadoop-azure:${hadoop.compile.version}"</hadoop.integ.libs>
+        <hadoop.s3.impl>org.apache.hadoop.fs.s3a.S3AFileSystem</hadoop.s3.impl>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+             <!-- snakeyaml explicitly pinned to version 1.33 as it is
+             a transitive dependency of com.fasterxml.jackson.dataformat:jackson-dataformat-yaml 2.12.7
+             please remove this pin, after updating jackson-dataform-yaml to version > 2.14.3  / 2.15.0 -->
+            <dependency>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>1.33</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -85,11 +98,6 @@
         <dependency>
             <groupId>commons-codec</groupId>
             <artifactId>commons-codec</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.druid</groupId>
-            <artifactId>druid-core</artifactId>
-            <version>${project.parent.version}</version>
         </dependency>
         <dependency>
             <groupId>com.amazonaws</groupId>
@@ -240,6 +248,11 @@
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.apache.druid.extensions</groupId>
+            <artifactId>druid-multi-stage-query</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.apache.druid</groupId>
             <artifactId>druid-services</artifactId>
             <version>${project.parent.version}</version>
@@ -265,6 +278,7 @@
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
         </dependency>
+
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
@@ -295,8 +309,8 @@
             <artifactId>guava</artifactId>
         </dependency>
         <dependency>
-            <groupId>javax.validation</groupId>
-            <artifactId>validation-api</artifactId>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
@@ -310,37 +324,35 @@
         <dependency>
             <groupId>com.github.docker-java</groupId>
             <artifactId>docker-java</artifactId>
-            <version>3.2.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>com.github.docker-java</groupId>
                     <artifactId>docker-java-transport-jersey</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>io.netty</groupId>
-                    <artifactId>netty-transport-native-kqueue</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
         <dependency>
             <groupId>com.github.docker-java</groupId>
             <artifactId>docker-java-transport-netty</artifactId>
-            <version>3.2.11</version>
         </dependency>
         <dependency>
             <groupId>com.github.docker-java</groupId>
             <artifactId>docker-java-api</artifactId>
-            <version>3.2.0</version>
         </dependency>
         <dependency>
             <groupId>com.github.docker-java</groupId>
             <artifactId>docker-java-core</artifactId>
-            <version>3.2.0</version>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport-native-kqueue</artifactId>
             <classifier>osx-x86_64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-kqueue</artifactId>
+            <classifier>osx-aarch_64</classifier>
             <scope>runtime</scope>
         </dependency>
         <dependency>
@@ -356,12 +368,11 @@
         <dependency>
             <groupId>com.google.inject.extensions</groupId>
             <artifactId>guice-servlet</artifactId>
-            <version>${guice.version}</version>
         </dependency>
         <dependency>
             <groupId>io.confluent</groupId>
             <artifactId>kafka-schema-registry-client</artifactId>
-            <version>5.5.1</version>
+            <version>6.2.12</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
@@ -396,13 +407,12 @@
         <dependency>
             <groupId>io.confluent</groupId>
             <artifactId>kafka-protobuf-provider</artifactId>
-            <version>5.5.1</version>
+            <version>6.2.12</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>3.11.0</version>
         </dependency>
 
         <!-- Tests -->
@@ -414,6 +424,16 @@
         <dependency>
             <groupId>org.apache.calcite.avatica</groupId>
             <artifactId>avatica-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest-all</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest-core</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -553,13 +573,6 @@
 
     <profiles>
         <profile>
-            <id>hadoop3</id>
-            <properties>
-                <hadoop.integ.libs>"org.apache.hadoop:hadoop-client-api:${hadoop.compile.version}", "org.apache.hadoop:hadoop-client-runtime:${hadoop.compile.version}", "org.apache.hadoop:hadoop-azure:${hadoop.compile.version}"</hadoop.integ.libs>
-                <hadoop.s3.impl>org.apache.hadoop.fs.s3a.S3AFileSystem</hadoop.s3.impl>
-            </properties>
-        </profile>
-        <profile>
             <id>integration-tests</id>
             <properties>
                 <start.hadoop.docker>false</start.hadoop.docker>
@@ -598,7 +611,7 @@
                                         <DRUID_INTEGRATION_TEST_INDEXER>${it.indexer}</DRUID_INTEGRATION_TEST_INDEXER>
                                         <MYSQL_VERSION>${mysql.version}</MYSQL_VERSION>
                                         <MARIA_VERSION>2.7.3</MARIA_VERSION>
-                                        <CONFLUENT_VERSION>5.5.1</CONFLUENT_VERSION>
+                                        <CONFLUENT_VERSION>6.2.12</CONFLUENT_VERSION>
                                         <KAFKA_VERSION>${apache.kafka.version}</KAFKA_VERSION>
                                         <ZK_VERSION>${zookeeper.version}</ZK_VERSION>
                                         <HADOOP_VERSION>${hadoop.compile.version}</HADOOP_VERSION>
@@ -648,11 +661,11 @@
                                 </property>
                             </properties>
                             <argLine>
-                                -Xmx64m
+                                ${jdk.strong.encapsulation.argLine}
+                                -Xmx256m
                                 -Duser.timezone=UTC
                                 -Dfile.encoding=UTF-8
                                 -Ddruid.test.config.dockerIp=${env.DOCKER_IP}
-                                -Ddruid.test.config.hadoopDir=${env.HADOOP_DIR}
                                 -Ddruid.test.config.extraDatasourceNameSuffix=${extra.datasource.name.suffix}
                                 -Ddruid.zk.service.host=${env.DOCKER_IP}
                                 -Ddruid.client.https.trustStorePath=client_tls/truststore.jks
@@ -755,6 +768,7 @@
                                 </property>
                             </properties>
                             <argLine>
+                                ${jdk.strong.encapsulation.argLine}
                                 -Duser.timezone=UTC
                                 -Dfile.encoding=UTF-8
                                 -Ddruid.test.config.type=configFile

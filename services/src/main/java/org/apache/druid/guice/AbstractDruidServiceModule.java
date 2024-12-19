@@ -33,8 +33,9 @@ import java.util.Set;
 /**
  * An abstract module for dynamic registration of {@link DruidService}.
  * DruidServices are bound to a set which is mapped to a certain {@link NodeRole}.
- * See {@link org.apache.druid.cli.GuiceRunnable#registerNodeRoleModule} for how the map is bound.
- *
+ * See {@link org.apache.druid.initialization.ServerInjectorBuilder#registerNodeRoleModule}
+ * for how the map is bound.
+ * <p>
  * To register a DruidService, create a class something like below:
  *
  * <pre>
@@ -63,18 +64,18 @@ public abstract class AbstractDruidServiceModule implements Module
   }
 
   /**
-   * A helper method for extensions which do not implement Module directly. 
+   * A helper method for extensions which do not implement Module directly.
    */
   public static void configure(Binder binder, NodeRole role)
   {
     binder.install(MultibindingsScanner.asModule());
     MapBinder<NodeRole, Set<Class<? extends DruidService>>> serviceBinder = MapBinder.newMapBinder(
         binder,
-        new TypeLiteral<NodeRole>(){},
-        new TypeLiteral<Set<Class<? extends DruidService>>>(){}
+        new TypeLiteral<>() {},
+        new TypeLiteral<>() {}
     );
     serviceBinder
         .addBinding(role)
-        .to(Key.get(new TypeLiteral<Set<Class<? extends DruidService>>>(){}, role.getDruidServiceInjectName()));
+        .to(Key.get(new TypeLiteral<>() {}, role.getDruidServiceInjectName()));
   }
 }

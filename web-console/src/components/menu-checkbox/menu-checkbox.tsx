@@ -16,13 +16,15 @@
  * limitations under the License.
  */
 
-import { MenuItem, MenuItemProps } from '@blueprintjs/core';
+import type { MenuItemProps } from '@blueprintjs/core';
+import { MenuItem } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
 import classNames from 'classnames';
-import React from 'react';
+
+import { checkedCircleIcon } from '../../utils';
 
 export interface MenuCheckboxProps extends Omit<MenuItemProps, 'icon' | 'onClick'> {
-  checked: boolean;
+  checked: boolean | undefined;
   onChange: () => void;
 }
 
@@ -32,7 +34,7 @@ export function MenuCheckbox(props: MenuCheckboxProps) {
   return (
     <MenuItem
       className={classNames('menu-checkbox', className)}
-      icon={checked ? IconNames.TICK_CIRCLE : IconNames.CIRCLE}
+      icon={typeof checked === 'boolean' ? checkedCircleIcon(checked) : IconNames.BLANK}
       onClick={onChange}
       shouldDismissPopover={shouldDismissPopover ?? false}
       {...rest}

@@ -48,6 +48,7 @@ import org.apache.druid.java.util.common.io.smoosh.Smoosh;
 import org.apache.druid.java.util.common.io.smoosh.SmooshedFileMapper;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.java.util.emitter.EmittingLogger;
+import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.segment.column.ColumnBuilder;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnConfig;
@@ -60,14 +61,16 @@ import org.apache.druid.segment.data.BitmapSerdeFactory;
 import org.apache.druid.segment.data.CompressedColumnarLongsSupplier;
 import org.apache.druid.segment.data.GenericIndexed;
 import org.apache.druid.segment.data.ImmutableRTreeObjectStrategy;
+import org.apache.druid.segment.data.Indexed;
 import org.apache.druid.segment.data.IndexedIterable;
+import org.apache.druid.segment.data.ListIndexed;
 import org.apache.druid.segment.data.VSizeColumnarMultiInts;
+import org.apache.druid.segment.projections.Projections;
 import org.apache.druid.segment.serde.ComplexColumnPartSupplier;
-import org.apache.druid.segment.serde.DictionaryEncodedColumnSupplier;
 import org.apache.druid.segment.serde.FloatNumericColumnSupplier;
 import org.apache.druid.segment.serde.LongNumericColumnSupplier;
-import org.apache.druid.segment.serde.SpatialIndexColumnPartSupplier;
-import org.apache.druid.segment.serde.StringBitmapIndexColumnPartSupplier;
+import org.apache.druid.segment.serde.StringUtf8ColumnIndexSupplier;
+import org.apache.druid.segment.serde.StringUtf8DictionaryEncodedColumnSupplier;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
@@ -78,8 +81,10 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -107,7 +112,7 @@ public class IndexIO
     this.mapper = Preconditions.checkNotNull(mapper, "null ObjectMapper");
     Preconditions.checkNotNull(columnConfig, "null ColumnConfig");
     ImmutableMap.Builder<Integer, IndexLoader> indexLoadersBuilder = ImmutableMap.builder();
-    LegacyIndexLoader legacyIndexLoader = new LegacyIndexLoader(new DefaultIndexIOHandler(), columnConfig);
+    LegacyIndexLoader legacyIndexLoader = new LegacyIndexLoader(new DefaultIndexIOHandler());
     for (int i = 0; i <= V8_VERSION; i++) {
       indexLoadersBuilder.put(i, legacyIndexLoader);
     }
@@ -137,8 +142,8 @@ public class IndexIO
       );
     }
     {
-      final Set<String> dimNames1 = Sets.newHashSet(adapter1.getDimensionNames());
-      final Set<String> dimNames2 = Sets.newHashSet(adapter2.getDimensionNames());
+      final Set<String> dimNames1 = Sets.newHashSet(adapter1.getDimensionNames(true));
+      final Set<String> dimNames2 = Sets.newHashSet(adapter2.getDimensionNames(true));
       if (!dimNames1.equals(dimNames2)) {
         throw new SegmentValidationException(
             "Dimension names differ. Expected [%s] found [%s]",
@@ -152,35 +157,38 @@ public class IndexIO
         throw new SegmentValidationException("Metric names differ. Expected [%s] found [%s]", metNames1, metNames2);
       }
     }
-    final RowIterator it1 = adapter1.getRows();
-    final RowIterator it2 = adapter2.getRows();
-    long row = 0L;
-    while (it1.moveToNext()) {
-      if (!it2.moveToNext()) {
-        throw new SegmentValidationException("Unexpected end of second adapter");
+    try (
+        final RowIterator it1 = adapter1.getRows();
+        final RowIterator it2 = adapter2.getRows()
+    ) {
+      long row = 0L;
+      while (it1.moveToNext()) {
+        if (!it2.moveToNext()) {
+          throw new SegmentValidationException("Unexpected end of second adapter");
+        }
+        final RowPointer rp1 = it1.getPointer();
+        final RowPointer rp2 = it2.getPointer();
+        ++row;
+        if (rp1.getRowNum() != rp2.getRowNum()) {
+          throw new SegmentValidationException("Row number mismatch: [%d] vs [%d]", rp1.getRowNum(), rp2.getRowNum());
+        }
+        try {
+          validateRowValues(rp1, adapter1, rp2, adapter2);
+        }
+        catch (SegmentValidationException ex) {
+          throw new SegmentValidationException(ex, "Validation failure on row %d: [%s] vs [%s]", row, rp1, rp2);
+        }
       }
-      final RowPointer rp1 = it1.getPointer();
-      final RowPointer rp2 = it2.getPointer();
-      ++row;
-      if (rp1.getRowNum() != rp2.getRowNum()) {
-        throw new SegmentValidationException("Row number mismatch: [%d] vs [%d]", rp1.getRowNum(), rp2.getRowNum());
+      if (it2.moveToNext()) {
+        throw new SegmentValidationException("Unexpected end of first adapter");
       }
-      try {
-        validateRowValues(rp1, adapter1, rp2, adapter2);
+      if (row != adapter1.getNumRows()) {
+        throw new SegmentValidationException(
+            "Actual Row count mismatch. Expected [%d] found [%d]",
+            row,
+            adapter1.getNumRows()
+        );
       }
-      catch (SegmentValidationException ex) {
-        throw new SegmentValidationException(ex, "Validation failure on row %d: [%s] vs [%s]", row, rp1, rp2);
-      }
-    }
-    if (it2.moveToNext()) {
-      throw new SegmentValidationException("Unexpected end of first adapter");
-    }
-    if (row != adapter1.getNumRows()) {
-      throw new SegmentValidationException(
-          "Actual Row count mismatch. Expected [%d] found [%d]",
-          row,
-          adapter1.getNumRows()
-      );
     }
   }
 
@@ -234,8 +242,8 @@ public class IndexIO
     if (dims1.size() != dims2.size()) {
       throw new SegmentValidationException("Dim lengths not equal %s vs %s", dims1, dims2);
     }
-    final List<String> dim1Names = adapter1.getDimensionNames();
-    final List<String> dim2Names = adapter2.getDimensionNames();
+    final List<String> dim1Names = adapter1.getDimensionNames(false);
+    final List<String> dim2Names = adapter2.getDimensionNames(false);
     int dimCount = dims1.size();
     for (int i = 0; i < dimCount; ++i) {
       final String dim1Name = dim1Names.get(i);
@@ -270,6 +278,10 @@ public class IndexIO
           if (((List) vals2).size() != 1 || !Objects.equals(((List) vals2).get(0), vals1)) {
             throw notEqualValidationException(dim1Name, vals1, vals2);
           }
+        }
+      } else if (vals1 instanceof Object[]) {
+        if (!Arrays.deepEquals((Object[]) vals1, (Object[]) vals2)) {
+          throw notEqualValidationException(dim1Name, vals1, vals2);
         }
       } else {
         if (!Objects.equals(vals1, vals2)) {
@@ -359,7 +371,6 @@ public class IndexIO
         metrics.put(metric, holder);
       }
 
-      Map<String, GenericIndexed<String>> dimValueLookups = new HashMap<>();
       Map<String, GenericIndexed<ByteBuffer>> dimValueUtf8Lookups = new HashMap<>();
       Map<String, VSizeColumnarMultiInts> dimColumns = new HashMap<>();
       Map<String, GenericIndexed<ImmutableBitmap>> bitmaps = new HashMap<>();
@@ -374,9 +385,7 @@ public class IndexIO
             fileDimensionName
         );
 
-        // Duplicate the first buffer since we are reading the dictionary twice.
-        dimValueLookups.put(dimension, GenericIndexed.read(dimBuffer.duplicate(), GenericIndexed.STRING_STRATEGY));
-        dimValueUtf8Lookups.put(dimension, GenericIndexed.read(dimBuffer, GenericIndexed.BYTE_BUFFER_STRATEGY));
+        dimValueUtf8Lookups.put(dimension, GenericIndexed.read(dimBuffer, GenericIndexed.UTF8_STRATEGY));
         dimColumns.put(dimension, VSizeColumnarMultiInts.readFromByteBuffer(dimBuffer));
       }
 
@@ -405,7 +414,6 @@ public class IndexIO
           dataInterval,
           timestamps,
           metrics,
-          dimValueLookups,
           dimValueUtf8Lookups,
           dimColumns,
           bitmaps,
@@ -427,12 +435,10 @@ public class IndexIO
   static class LegacyIndexLoader implements IndexLoader
   {
     private final IndexIOHandler legacyHandler;
-    private final ColumnConfig columnConfig;
 
-    LegacyIndexLoader(IndexIOHandler legacyHandler, ColumnConfig columnConfig)
+    LegacyIndexLoader(IndexIOHandler legacyHandler)
     {
       this.legacyHandler = legacyHandler;
-      this.columnConfig = columnConfig;
     }
 
     @Override
@@ -440,31 +446,32 @@ public class IndexIO
     {
       MMappedIndex index = legacyHandler.mapDir(inDir);
 
-      Map<String, Supplier<ColumnHolder>> columns = new HashMap<>();
+      Map<String, Supplier<ColumnHolder>> columns = new LinkedHashMap<>();
 
       for (String dimension : index.getAvailableDimensions()) {
         ColumnBuilder builder = new ColumnBuilder()
             .setType(ValueType.STRING)
             .setHasMultipleValues(true)
             .setDictionaryEncodedColumnSupplier(
-                new DictionaryEncodedColumnSupplier(
-                    index.getDimValueLookup(dimension),
-                    index.getDimValueUtf8Lookup(dimension),
+                new StringUtf8DictionaryEncodedColumnSupplier<>(
+                    index.getDimValueUtf8Lookup(dimension)::singleThreaded,
                     null,
                     Suppliers.ofInstance(index.getDimColumn(dimension)),
-                    columnConfig.columnCacheSizeBytes()
-                )
-            )
-            .setBitmapIndex(
-                new StringBitmapIndexColumnPartSupplier(
-                    new ConciseBitmapFactory(),
-                    index.getBitmapIndexes().get(dimension),
-                    index.getDimValueLookup(dimension)
+                    LEGACY_FACTORY.getBitmapFactory()
                 )
             );
-        if (index.getSpatialIndexes().get(dimension) != null) {
-          builder.setSpatialIndex(new SpatialIndexColumnPartSupplier(index.getSpatialIndexes().get(dimension)));
-        }
+        GenericIndexed<ImmutableBitmap> bitmaps = index.getBitmapIndexes().get(dimension);
+        ImmutableRTree spatialIndex = index.getSpatialIndexes().get(dimension);
+        builder.setIndexSupplier(
+            new StringUtf8ColumnIndexSupplier<>(
+                new ConciseBitmapFactory(),
+                index.getDimValueUtf8Lookup(dimension)::singleThreaded,
+                bitmaps,
+                spatialIndex
+            ),
+            bitmaps != null,
+            spatialIndex != null
+        );
         columns.put(dimension, getColumnHolderSupplier(builder, lazy));
       }
 
@@ -506,9 +513,15 @@ public class IndexIO
           new ConciseBitmapFactory(),
           columns,
           index.getFileMapper(),
-          null,
           lazy
-      );
+      )
+      {
+        @Override
+        public Metadata getMetadata()
+        {
+          return null;
+        }
+      };
     }
 
     private Supplier<ColumnHolder> getColumnHolderSupplier(ColumnBuilder builder, boolean lazy)
@@ -600,26 +613,7 @@ public class IndexIO
         allDims = null;
       }
 
-      Metadata metadata = null;
-      ByteBuffer metadataBB = smooshedFiles.mapFile("metadata.drd");
-      if (metadataBB != null) {
-        try {
-          metadata = mapper.readValue(
-              SERIALIZER_UTILS.readBytes(metadataBB, metadataBB.remaining()),
-              Metadata.class
-          );
-        }
-        catch (JsonParseException | JsonMappingException ex) {
-          // Any jackson deserialization errors are ignored e.g. if metadata contains some aggregator which
-          // is no longer supported then it is OK to not use the metadata instead of failing segment loading
-          log.warn(ex, "Failed to load metadata for segment [%s]", inDir);
-        }
-        catch (IOException ex) {
-          throw new IOException("Failed to read metadata", ex);
-        }
-      }
-
-      Map<String, Supplier<ColumnHolder>> columns = new HashMap<>();
+      Map<String, Supplier<ColumnHolder>> columns = new LinkedHashMap<>();
 
       // Register the time column
       ByteBuffer timeBuffer = smooshedFiles.mapFile("__time");
@@ -630,17 +624,16 @@ public class IndexIO
           mapper,
           timeBuffer,
           smooshedFiles,
+          null,
           loadFailed
       );
 
-      final GenericIndexed<String> finalCols, finalDims;
+      final Indexed<String> finalCols, finalDims;
 
       if (allCols != null) {
         // To restore original column order, we merge allCols/allDims and nonNullCols/nonNullDims, respectively.
-        final List<String> mergedCols = restoreColumns(nonNullCols, allCols);
-        final List<String> mergedDims = restoreColumns(nonNullDims, allDims);
-        finalCols = GenericIndexed.fromIterable(mergedCols, GenericIndexed.STRING_STRATEGY);
-        finalDims = GenericIndexed.fromIterable(mergedDims, GenericIndexed.STRING_STRATEGY);
+        finalCols = new ListIndexed<>(restoreColumns(nonNullCols, allCols));
+        finalDims = new ListIndexed<>(restoreColumns(nonNullDims, allDims));
       } else {
         finalCols = nonNullCols;
         finalDims = nonNullDims;
@@ -654,6 +647,22 @@ public class IndexIO
           smooshedFiles,
           loadFailed
       );
+      final Map<String, Map<String, Supplier<ColumnHolder>>> projectionsColumns = new LinkedHashMap<>();
+      final Metadata metadata = getMetdata(smooshedFiles, mapper, inDir);
+      if (metadata != null && metadata.getProjections() != null) {
+        for (AggregateProjectionMetadata projectionSpec : metadata.getProjections()) {
+          final Map<String, Supplier<ColumnHolder>> projectionColumns = readProjectionColumns(
+              mapper,
+              loadFailed,
+              projectionSpec,
+              smooshedFiles,
+              columns,
+              dataInterval
+          );
+
+          projectionsColumns.put(projectionSpec.getSchema().getName(), projectionColumns);
+        }
+      }
 
       final QueryableIndex index = new SimpleQueryableIndex(
           dataInterval,
@@ -661,13 +670,103 @@ public class IndexIO
           segmentBitmapSerdeFactory.getBitmapFactory(),
           columns,
           smooshedFiles,
+          lazy,
           metadata,
-          lazy
-      );
+          projectionsColumns
+      )
+      {
+        @Override
+        public Metadata getMetadata()
+        {
+          return getMetdata(smooshedFiles, mapper, inDir);
+        }
+      };
 
       log.debug("Mapped v9 index[%s] in %,d millis", inDir, System.currentTimeMillis() - startTime);
 
       return index;
+    }
+
+    private Map<String, Supplier<ColumnHolder>> readProjectionColumns(
+        ObjectMapper mapper,
+        SegmentLazyLoadFailCallback loadFailed,
+        AggregateProjectionMetadata projectionSpec,
+        SmooshedFileMapper smooshedFiles,
+        Map<String, Supplier<ColumnHolder>> columns,
+        Interval dataInterval
+    ) throws IOException
+    {
+      final Map<String, Supplier<ColumnHolder>> projectionColumns = new LinkedHashMap<>();
+      for (String groupingColumn : projectionSpec.getSchema().getGroupingColumns()) {
+        final String smooshName = Projections.getProjectionSmooshV9FileName(projectionSpec, groupingColumn);
+        final ByteBuffer colBuffer = smooshedFiles.mapFile(smooshName);
+
+        final ColumnHolder parentColumn;
+        if (columns.containsKey(groupingColumn)) {
+          parentColumn = columns.get(groupingColumn).get();
+        } else {
+          parentColumn = null;
+        }
+        registerColumnHolder(
+            true,
+            projectionColumns,
+            groupingColumn,
+            mapper,
+            colBuffer,
+            smooshedFiles,
+            parentColumn,
+            loadFailed
+        );
+
+        if (groupingColumn.equals(projectionSpec.getSchema().getTimeColumnName())) {
+          projectionColumns.put(ColumnHolder.TIME_COLUMN_NAME, projectionColumns.get(groupingColumn));
+          projectionColumns.remove(groupingColumn);
+        }
+      }
+      for (AggregatorFactory aggregator : projectionSpec.getSchema().getAggregators()) {
+        final String smooshName = Projections.getProjectionSmooshV9FileName(projectionSpec, aggregator.getName());
+        final ByteBuffer aggBuffer = smooshedFiles.mapFile(smooshName);
+        registerColumnHolder(
+            true,
+            projectionColumns,
+            aggregator.getName(),
+            mapper,
+            aggBuffer,
+            smooshedFiles,
+            null,
+            loadFailed
+        );
+      }
+      if (projectionSpec.getSchema().getTimeColumnName() == null) {
+        projectionColumns.put(
+            ColumnHolder.TIME_COLUMN_NAME,
+            Projections.makeConstantTimeSupplier(projectionSpec.getNumRows(), dataInterval.getStartMillis())
+        );
+      }
+      return projectionColumns;
+    }
+
+    @Nullable
+    private Metadata getMetdata(SmooshedFileMapper smooshedFiles, ObjectMapper mapper, File inDir)
+    {
+      try {
+        ByteBuffer metadataBB = smooshedFiles.mapFile("metadata.drd");
+        if (metadataBB != null) {
+          return mapper.readValue(
+              SERIALIZER_UTILS.readBytes(metadataBB, metadataBB.remaining()),
+              Metadata.class
+          );
+        }
+      }
+      catch (JsonParseException | JsonMappingException ex) {
+        // Any jackson deserialization errors are ignored e.g. if metadata contains some aggregator which
+        // is no longer supported then it is OK to not use the metadata instead of failing segment loading
+        log.warn(ex, "Failed to load metadata for segment [%s]", inDir);
+      }
+      catch (IOException ex) {
+        log.warn(ex, "Failed to read metadata for segment [%s]", inDir);
+      }
+      return null;
     }
 
     /**
@@ -695,9 +794,9 @@ public class IndexIO
               + "while allColsIterator expects one. This is likely a potential bug in creating this segment. "
               + "Try reingesting your data with storeEmptyColumns setting to false in task context."
           );
-          mergedCols.add(nonNullColsIterator.next());
+          mergedCols.add(SmooshedFileMapper.STRING_INTERNER.intern(nonNullColsIterator.next()));
         } else {
-          mergedCols.add(next);
+          mergedCols.add(SmooshedFileMapper.STRING_INTERNER.intern(next));
         }
       }
 
@@ -706,7 +805,7 @@ public class IndexIO
 
     private void registerColumnHolders(
         File inDir,
-        GenericIndexed<String> cols,
+        Indexed<String> cols,
         boolean lazy,
         Map<String, Supplier<ColumnHolder>> columns,
         ObjectMapper mapper,
@@ -720,7 +819,7 @@ public class IndexIO
           continue;
         }
 
-        ByteBuffer colBuffer = smooshedFiles.mapFile(columnName);
+        final ByteBuffer colBuffer = smooshedFiles.mapFile(columnName);
         registerColumnHolder(
             lazy,
             columns,
@@ -728,6 +827,7 @@ public class IndexIO
             mapper,
             colBuffer,
             smooshedFiles,
+            null,
             loadFailed
         );
       }
@@ -740,18 +840,24 @@ public class IndexIO
         ObjectMapper mapper,
         ByteBuffer colBuffer,
         SmooshedFileMapper smooshedFiles,
+        @Nullable ColumnHolder parentColumn,
         SegmentLazyLoadFailCallback loadFailed
     ) throws IOException
     {
+
+      // we use the interner here too even though it might have already been added by restoreColumns(..) because that
+      // only happens if there are some null columns
+      final String internedColumnName = SmooshedFileMapper.STRING_INTERNER.intern(columnName);
       if (lazy) {
-        columns.put(columnName, Suppliers.memoize(
+        columns.put(internedColumnName, Suppliers.memoize(
             () -> {
               try {
                 return deserializeColumn(
-                    columnName,
+                    internedColumnName,
                     mapper,
                     colBuffer,
-                    smooshedFiles
+                    smooshedFiles,
+                    parentColumn
                 );
               }
               catch (IOException | RuntimeException e) {
@@ -762,13 +868,14 @@ public class IndexIO
             }
         ));
       } else {
-        ColumnHolder columnHolder = deserializeColumn(
-            columnName,
+        final ColumnHolder columnHolder = deserializeColumn(
+            internedColumnName,
             mapper,
             colBuffer,
-            smooshedFiles
+            smooshedFiles,
+            parentColumn
         );
-        columns.put(columnName, () -> columnHolder);
+        columns.put(internedColumnName, () -> columnHolder);
       }
     }
 
@@ -781,13 +888,12 @@ public class IndexIO
         String columnName, // columnName is not used in this method, but used in tests.
         ObjectMapper mapper,
         ByteBuffer byteBuffer,
-        SmooshedFileMapper smooshedFiles
+        SmooshedFileMapper smooshedFiles,
+        @Nullable ColumnHolder parentColumn
     ) throws IOException
     {
-      ColumnDescriptor serde = mapper.readValue(
-          SERIALIZER_UTILS.readString(byteBuffer), ColumnDescriptor.class
-      );
-      return serde.read(byteBuffer, columnConfig, smooshedFiles);
+      ColumnDescriptor serde = mapper.readValue(SERIALIZER_UTILS.readString(byteBuffer), ColumnDescriptor.class);
+      return serde.read(byteBuffer, columnConfig, smooshedFiles, parentColumn);
     }
   }
 

@@ -20,7 +20,6 @@
 package org.apache.druid.query.expressions;
 
 import org.apache.druid.guice.BloomFilterSerializersModule;
-import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
@@ -55,24 +54,22 @@ public class BloomFilterExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() != 1) {
-        throw new IAE("Function[%s] must have 1 argument", name());
-      }
+      validationHelperCheckArgumentCount(args, 1);
 
       final Expr expectedSizeArg = args.get(0);
 
       if (!expectedSizeArg.isLiteral() || expectedSizeArg.getLiteralValue() == null) {
-        throw new IAE("Function[%s] argument must be an LONG constant", name());
+        throw validationFailed("argument must be a LONG constant");
       }
 
-      class BloomExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+      class BloomExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
       {
         final int expectedSize;
 
-        public BloomExpr(Expr arg)
+        public BloomExpr(List<Expr> args)
         {
-          super(FN_NAME, arg);
-          this.expectedSize = arg.eval(InputBindings.nilBindings()).asInt();
+          super(CreateExprMacro.this, args);
+          this.expectedSize = args.get(0).eval(InputBindings.nilBindings()).asInt();
         }
 
         @Override
@@ -84,12 +81,6 @@ public class BloomFilterExpressions
           );
         }
 
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
-        }
-
         @Nullable
         @Override
         public ExpressionType getOutputType(InputBindingInspector inspector)
@@ -98,7 +89,7 @@ public class BloomFilterExpressions
         }
       }
 
-      return new BloomExpr(expectedSizeArg);
+      return new BloomExpr(args);
     }
   }
 
@@ -115,15 +106,13 @@ public class BloomFilterExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() != 2) {
-        throw new IAE("Function[%s] must have 2 arguments", name());
-      }
+      validationHelperCheckArgumentCount(args, 2);
 
       class BloomExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
       {
         private BloomExpr(List<Expr> args)
         {
-          super(FN_NAME, args);
+          super(AddExprMacro.this, args);
         }
 
         @Override
@@ -134,7 +123,7 @@ public class BloomFilterExpressions
           // type information everywhere
           if (!bloomy.type().equals(BLOOM_FILTER_TYPE) ||
               !bloomy.type().is(ExprType.COMPLEX) && bloomy.value() instanceof BloomKFilter) {
-            throw new IAE("Function[%s] must take a bloom filter as the second argument", FN_NAME);
+            throw AddExprMacro.this.validationFailed("must take a bloom filter as the second argument");
           }
           BloomKFilter filter = (BloomKFilter) bloomy.value();
           assert filter != null;
@@ -154,23 +143,17 @@ public class BloomFilterExpressions
                 filter.addLong(input.asLong());
                 break;
               case COMPLEX:
-                if (BLOOM_FILTER_TYPE.equals(input.type()) || (bloomy.type().is(ExprType.COMPLEX) && bloomy.value() instanceof BloomKFilter)) {
+                if (BLOOM_FILTER_TYPE.equals(input.type()) ||
+                    (bloomy.type().is(ExprType.COMPLEX) && bloomy.value() instanceof BloomKFilter)) {
                   filter.merge((BloomKFilter) input.value());
                   break;
                 }
               default:
-                throw new IAE("Function[%s] cannot add [%s] to a bloom filter", FN_NAME, input.type());
+                throw AddExprMacro.this.validationFailed("cannot add [%s] to a bloom filter", input.type());
             }
           }
 
           return ExprEval.ofComplex(BLOOM_FILTER_TYPE, filter);
-        }
-
-
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
         }
 
         @Nullable
@@ -198,17 +181,18 @@ public class BloomFilterExpressions
     @Override
     public Expr apply(List<Expr> args)
     {
-      if (args.size() != 2) {
-        throw new IAE("Function[%s] must have 2 arguments", name());
-      }
+      validationHelperCheckArgumentCount(args, 2);
 
-      class BloomExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+      final Expr arg = args.get(0);
+      final Expr filterExpr = args.get(1);
+
+      class BloomExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
       {
         private final BloomKFilter filter;
 
-        private BloomExpr(BloomKFilter filter, Expr arg)
+        private BloomExpr(BloomKFilter filter, List<Expr> args)
         {
-          super(FN_NAME, arg);
+          super(TestExprMacro.this, args);
           this.filter = filter;
         }
 
@@ -254,12 +238,6 @@ public class BloomFilterExpressions
           return filter.testBytes(null, 0, 0);
         }
 
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
-        }
-
         @Nullable
         @Override
         public ExpressionType getOutputType(InputBindingInspector inspector)
@@ -272,7 +250,7 @@ public class BloomFilterExpressions
       {
         public DynamicBloomExpr(List<Expr> args)
         {
-          super(FN_NAME, args);
+          super(TestExprMacro.this, args);
         }
 
         @Override
@@ -283,7 +261,7 @@ public class BloomFilterExpressions
           // type information everywhere
           if (!bloomy.type().equals(BLOOM_FILTER_TYPE) ||
               !bloomy.type().is(ExprType.COMPLEX) && bloomy.value() instanceof BloomKFilter) {
-            throw new IAE("Function[%s] must take a bloom filter as the second argument", FN_NAME);
+            throw TestExprMacro.this.validationFailed("must take a bloom filter as the second argument");
           }
           BloomKFilter filter = (BloomKFilter) bloomy.value();
           assert filter != null;
@@ -325,12 +303,6 @@ public class BloomFilterExpressions
           return filter.testBytes(null, 0, 0);
         }
 
-        @Override
-        public Expr visit(Shuttle shuttle)
-        {
-          return shuttle.visit(apply(shuttle.visitAll(args)));
-        }
-
         @Nullable
         @Override
         public ExpressionType getOutputType(InputBindingInspector inspector)
@@ -338,10 +310,6 @@ public class BloomFilterExpressions
           return ExpressionType.LONG;
         }
       }
-
-
-      final Expr arg = args.get(0);
-      final Expr filterExpr = args.get(1);
 
       if (filterExpr.isLiteral() && filterExpr.getLiteralValue() instanceof String) {
         final String serializedFilter = (String) filterExpr.getLiteralValue();
@@ -351,9 +319,9 @@ public class BloomFilterExpressions
           filter = BloomFilterSerializersModule.bloomKFilterFromBytes(decoded);
         }
         catch (IOException ioe) {
-          throw new RuntimeException("Failed to deserialize bloom filter", ioe);
+          throw processingFailed(ioe, "failed to deserialize bloom filter");
         }
-        return new BloomExpr(filter, arg);
+        return new BloomExpr(filter, args);
       } else {
         return new DynamicBloomExpr(args);
       }

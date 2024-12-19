@@ -147,7 +147,8 @@ public class CompressedDoublesSerdeTest
           segmentWriteOutMedium,
           "test",
           order,
-          compressionStrategy
+          compressionStrategy,
+          segmentWriteOutMedium.getCloser()
       );
       serializer.open();
 
@@ -160,18 +161,18 @@ public class CompressedDoublesSerdeTest
 
   public void testWithValues(double[] values) throws Exception
   {
+    final SegmentWriteOutMedium segmentWriteOutMedium = new OffHeapMemorySegmentWriteOutMedium();
     ColumnarDoublesSerializer serializer = CompressionFactory.getDoubleSerializer(
         "test",
-        new OffHeapMemorySegmentWriteOutMedium(),
+        segmentWriteOutMedium,
         "test",
         order,
-        compressionStrategy
+        compressionStrategy,
+        segmentWriteOutMedium.getCloser()
     );
     serializer.open();
 
-    for (double value : values) {
-      serializer.add(value);
-    }
+    serializer.addAll(values, 0, values.length);
     Assert.assertEquals(values.length, serializer.size());
 
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -179,19 +180,20 @@ public class CompressedDoublesSerdeTest
     Assert.assertEquals(baos.size(), serializer.getSerializedSize());
     Supplier<ColumnarDoubles> supplier = CompressedColumnarDoublesSuppliers
         .fromByteBuffer(ByteBuffer.wrap(baos.toByteArray()), order);
-    ColumnarDoubles doubles = supplier.get();
-
-    assertIndexMatchesVals(doubles, values);
-    for (int i = 0; i < 10; i++) {
-      int a = (int) (ThreadLocalRandom.current().nextDouble() * values.length);
-      int b = (int) (ThreadLocalRandom.current().nextDouble() * values.length);
-      int start = a < b ? a : b;
-      int end = a < b ? b : a;
-      tryFill(doubles, values, start, end - start);
+    try (ColumnarDoubles doubles = supplier.get()) {
+      assertIndexMatchesVals(doubles, values);
+      for (int i = 0; i < 10; i++) {
+        int a = (int) (ThreadLocalRandom.current().nextDouble() * values.length);
+        int b = (int) (ThreadLocalRandom.current().nextDouble() * values.length);
+        int start = a < b ? a : b;
+        int end = a < b ? b : a;
+        tryFill(doubles, values, start, end - start);
+      }
+      testConcurrentThreadReads(supplier, doubles, values);
     }
-    testConcurrentThreadReads(supplier, doubles, values);
-
-    doubles.close();
+    finally {
+      segmentWriteOutMedium.close();
+    }
   }
 
   private void tryFill(ColumnarDoubles indexed, double[] vals, final int startIndex, final int size)
@@ -232,7 +234,7 @@ public class CompressedDoublesSerdeTest
       final double[] vals
   ) throws Exception
   {
-    final AtomicReference<String> reason = new AtomicReference<String>("none");
+    final AtomicReference<String> reason = new AtomicReference<>("none");
 
     final int numRuns = 1000;
     final CountDownLatch startLatch = new CountDownLatch(1);

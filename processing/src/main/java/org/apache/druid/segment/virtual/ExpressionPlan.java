@@ -133,6 +133,7 @@ public class ExpressionPlan
    */
   public Expr getExpression()
   {
+    Parser.validateExpr(expression, analysis);
     return expression;
   }
 
@@ -145,9 +146,11 @@ public class ExpressionPlan
   public Expr getAppliedExpression()
   {
     if (is(Trait.NEEDS_APPLIED)) {
-      return Parser.applyUnappliedBindings(expression, analysis, unappliedInputs);
+      final Expr applied = Parser.applyUnappliedBindings(expression, analysis, unappliedInputs);
+      Parser.validateExpr(applied, applied.analyzeInputs());
+      return applied;
     }
-    return expression;
+    return getExpression();
   }
 
   /**
@@ -165,9 +168,11 @@ public class ExpressionPlan
           "Accumulator cannot be implicitly transformed, if it is an ARRAY or multi-valued type it must"
           + " be used explicitly as such"
       );
-      return Parser.foldUnappliedBindings(expression, analysis, unappliedInputs, accumulatorId);
+      final Expr folded = Parser.foldUnappliedBindings(expression, analysis, unappliedInputs, accumulatorId);
+      Parser.validateExpr(folded, folded.analyzeInputs());
+      return folded;
     }
-    return expression;
+    return getExpression();
   }
 
   /**
@@ -230,6 +235,10 @@ public class ExpressionPlan
     if (outputType != null) {
       final ColumnType inferredValueType = ExpressionType.toColumnType(outputType);
 
+      if (inferredValueType.is(ValueType.COMPLEX)) {
+        return ColumnCapabilitiesImpl.createDefault().setHasNulls(true).setType(inferredValueType);
+      }
+
       if (inferredValueType.isNumeric()) {
         // if float was explicitly specified preserve it, because it will currently never be the computed output type
         // since there is no float expression type
@@ -241,7 +250,7 @@ public class ExpressionPlan
 
       // null constants can sometimes trip up the type inference to report STRING, so check if explicitly supplied
       // output type is numeric and stick with that if so
-      if (outputTypeHint != null && outputTypeHint.isNumeric()) {
+      if (Types.isNumeric(outputTypeHint)) {
         return ColumnCapabilitiesImpl.createSimpleNumericColumnCapabilities(outputTypeHint);
       }
 
@@ -265,12 +274,18 @@ public class ExpressionPlan
             // since we don't know if the expression is 1:1 or if it retains ordering we can only piggy back only
             // report as dictionary encoded, but it still allows us to use algorithms which work with dictionaryIds
             // to create a dictionary encoded selector instead of an object selector to defer expression evaluation
-            // until query time
-            return ColumnCapabilitiesImpl.copyOf(underlyingCapabilities)
+            // until query time. However, currently dictionary encodedness is tied to string selectors and sad stuff
+            // happens if the input type isn't string, so we also limit this to string input types
+            final boolean useDictionary = underlyingCapabilities.isDictionaryEncoded().isTrue() &&
+                                          underlyingCapabilities.is(ValueType.STRING);
+            return ColumnCapabilitiesImpl.createDefault()
                                          .setType(ColumnType.STRING)
-                                         .setDictionaryValuesSorted(false)
-                                         .setDictionaryValuesUnique(false)
-                                         .setHasBitmapIndexes(false)
+                                         .setDictionaryEncoded(useDictionary)
+                                         .setHasBitmapIndexes(underlyingCapabilities.hasBitmapIndexes())
+                                         .setHasMultipleValues(underlyingCapabilities.hasMultipleValues())
+                                         .setHasSpatialIndexes(underlyingCapabilities.hasSpatialIndexes())
+                                         // we aren't sure if the expression might produce null values or not, so always
+                                         // set hasNulls to true
                                          .setHasNulls(true);
           }
         }

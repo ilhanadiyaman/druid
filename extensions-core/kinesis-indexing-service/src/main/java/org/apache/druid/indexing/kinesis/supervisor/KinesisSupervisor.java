@@ -19,15 +19,13 @@
 
 package org.apache.druid.indexing.kinesis.supervisor;
 
-import com.amazonaws.services.kinesis.model.Shard;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import org.apache.druid.common.aws.AWSCredentialsConfig;
 import org.apache.druid.common.utils.IdUtils;
-import org.apache.druid.data.input.impl.ByteEntity;
+import org.apache.druid.data.input.kinesis.KinesisRecordEntity;
 import org.apache.druid.indexing.common.task.Task;
 import org.apache.druid.indexing.common.task.TaskResource;
 import org.apache.druid.indexing.kinesis.KinesisDataSourceMetadata;
@@ -66,7 +64,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -77,24 +74,17 @@ import java.util.stream.Collectors;
  * tasks to satisfy the desired number of replicas. As tasks complete, new tasks are queued to process the next range of
  * Kinesis sequences.
  */
-public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, ByteEntity>
+public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, KinesisRecordEntity>
 {
   private static final EmittingLogger log = new EmittingLogger(KinesisSupervisor.class);
 
   public static final TypeReference<TreeMap<Integer, Map<String, String>>> CHECKPOINTS_TYPE_REF =
-      new TypeReference<TreeMap<Integer, Map<String, String>>>()
-      {
-      };
+      new TypeReference<>() {};
 
   public static final String OFFSET_NOT_SET = "-1";
   private final KinesisSupervisorSpec spec;
   private final AWSCredentialsConfig awsCredentialsConfig;
   private volatile Map<String, Long> currentPartitionTimeLag;
-
-  // Maintain sets of currently closed shards to find ignorable (closed and empty) shards
-  // Poll closed shards once and store the result to avoid redundant costly calls to kinesis
-  private final Set<String> emptyClosedShardIds = new TreeSet<>();
-  private final Set<String> nonEmptyClosedShardIds = new TreeSet<>();
 
   public KinesisSupervisor(
       final TaskStorage taskStorage,
@@ -151,16 +141,15 @@ public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, 
         maximumMessageTime,
         ioConfig.getInputFormat(),
         ioConfig.getEndpoint(),
-        ioConfig.getRecordsPerFetch(),
         ioConfig.getFetchDelayMillis(),
         ioConfig.getAwsAssumedRoleArn(),
         ioConfig.getAwsExternalId(),
-        ioConfig.isDeaggregate()
+        ioConfig.getTaskDuration().getStandardMinutes()
     );
   }
 
   @Override
-  protected List<SeekableStreamIndexTask<String, String, ByteEntity>> createIndexTasks(
+  protected List<SeekableStreamIndexTask<String, String, KinesisRecordEntity>> createIndexTasks(
       int replicas,
       String baseSequenceName,
       ObjectMapper sortingMapper,
@@ -174,7 +163,7 @@ public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, 
     final Map<String, Object> context = createBaseTaskContexts();
     context.put(CHECKPOINTS_CTX_KEY, checkpoints);
 
-    List<SeekableStreamIndexTask<String, String, ByteEntity>> taskList = new ArrayList<>();
+    List<SeekableStreamIndexTask<String, String, KinesisRecordEntity>> taskList = new ArrayList<>();
     for (int i = 0; i < replicas; i++) {
       String taskId = IdUtils.getRandomIdWithPrefix(baseSequenceName);
       taskList.add(new KinesisIndexTask(
@@ -193,7 +182,7 @@ public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, 
 
 
   @Override
-  protected RecordSupplier<String, String, ByteEntity> setupRecordSupplier() throws RuntimeException
+  protected RecordSupplier<String, String, KinesisRecordEntity> setupRecordSupplier() throws RuntimeException
   {
     KinesisSupervisorIOConfig ioConfig = spec.getIoConfig();
     KinesisIndexTaskTuningConfig taskTuningConfig = spec.getTuningConfig();
@@ -205,15 +194,12 @@ public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, 
             ioConfig.getAwsAssumedRoleArn(),
             ioConfig.getAwsExternalId()
         ),
-        ioConfig.getRecordsPerFetch(),
         ioConfig.getFetchDelayMillis(),
         0, // skip starting background fetch, it is not used
-        ioConfig.isDeaggregate(),
-        taskTuningConfig.getRecordBufferSize(),
+        taskTuningConfig.getRecordBufferSizeBytesOrDefault(Runtime.getRuntime().maxMemory()),
         taskTuningConfig.getRecordBufferOfferTimeout(),
         taskTuningConfig.getRecordBufferFullWait(),
-        taskTuningConfig.getFetchSequenceNumberTimeout(),
-        taskTuningConfig.getMaxRecordsPerPoll(),
+        taskTuningConfig.getMaxBytesPerPollOrDefault(),
         ioConfig.isUseEarliestSequenceNumber(),
         spec.getSpec().getTuningConfig().isUseListShards()
     );
@@ -427,52 +413,6 @@ public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, 
   }
 
   @Override
-  protected boolean shouldSkipIgnorablePartitions()
-  {
-    return spec.getSpec().getTuningConfig().isSkipIgnorableShards();
-  }
-
-  /**
-   * A kinesis shard is considered to be an ignorable partition if it is both closed and empty
-   * @return set of shards ignorable by kinesis ingestion
-   */
-  @Override
-  protected Set<String> computeIgnorablePartitionIds()
-  {
-    updateClosedShardCache();
-    return ImmutableSet.copyOf(emptyClosedShardIds);
-  }
-
-  private synchronized void updateClosedShardCache()
-  {
-    final KinesisRecordSupplier kinesisRecordSupplier = (KinesisRecordSupplier) recordSupplier;
-    final String stream = spec.getSource();
-    final Set<Shard> allActiveShards = kinesisRecordSupplier.getShards(stream);
-    final Set<String> activeClosedShards = allActiveShards.stream()
-                                                          .filter(shard -> isShardClosed(shard))
-                                                          .map(Shard::getShardId)
-                                                          .collect(Collectors.toSet());
-
-    // clear stale shards
-    emptyClosedShardIds.retainAll(activeClosedShards);
-    nonEmptyClosedShardIds.retainAll(activeClosedShards);
-
-    for (String closedShardId : activeClosedShards) {
-      // Try to utilize cache
-      if (emptyClosedShardIds.contains(closedShardId) || nonEmptyClosedShardIds.contains(closedShardId)) {
-        continue;
-      }
-
-      // Check if it is closed using kinesis and add to cache
-      if (kinesisRecordSupplier.isClosedShardEmpty(stream, closedShardId)) {
-        emptyClosedShardIds.add(closedShardId);
-      } else {
-        nonEmptyClosedShardIds.add(closedShardId);
-      }
-    }
-  }
-
-  @Override
   protected SeekableStreamDataSourceMetadata<String, String> createDataSourceMetadataWithExpiredPartitions(
       SeekableStreamDataSourceMetadata<String, String> currentMetadata, Set<String> expiredPartitionIds
   )
@@ -536,16 +476,5 @@ public class KinesisSupervisor extends SeekableStreamSupervisor<String, String, 
     }
 
     return new KinesisDataSourceMetadata(newSequences);
-  }
-
-  /**
-   * A shard is considered closed iff it has an ending sequence number.
-   *
-   * @param shard to be checked
-   * @return if shard is closed
-   */
-  private boolean isShardClosed(Shard shard)
-  {
-    return shard.getSequenceNumberRange().getEndingSequenceNumber() != null;
   }
 }

@@ -41,6 +41,7 @@ import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 
 /**
  */
@@ -101,6 +102,12 @@ public class DoubleMeanAggregatorFactory extends AggregatorFactory
   }
 
   @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new DoubleMeanAggregatorFactory(newName, getFieldName());
+  }
+
+  @Override
   public Aggregator factorize(ColumnSelectorFactory metricFactory)
   {
     return new DoubleMeanAggregator(metricFactory.makeColumnValueSelector(fieldName));
@@ -154,12 +161,6 @@ public class DoubleMeanAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(new DoubleMeanAggregatorFactory(fieldName, fieldName));
-  }
-
-  @Override
   public Object deserialize(Object object)
   {
     if (object instanceof byte[]) {
@@ -195,5 +196,24 @@ public class DoubleMeanAggregatorFactory extends AggregatorFactory
         .appendString(name)
         .appendString(fieldName)
         .build();
+  }
+
+  @Override
+  public boolean equals(Object o)
+  {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    DoubleMeanAggregatorFactory that = (DoubleMeanAggregatorFactory) o;
+    return Objects.equals(name, that.name) && Objects.equals(fieldName, that.fieldName);
+  }
+
+  @Override
+  public int hashCode()
+  {
+    return Objects.hash(name, fieldName);
   }
 }

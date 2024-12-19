@@ -20,6 +20,7 @@
 package org.apache.druid.query.aggregation;
 
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
@@ -30,11 +31,8 @@ import org.apache.druid.segment.BaseDoubleColumnValueSelector;
 import org.apache.druid.segment.ColumnInspector;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.ColumnValueSelector;
-import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnHolder;
 import org.apache.druid.segment.column.ColumnType;
-import org.apache.druid.segment.column.Types;
-import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.vector.VectorColumnSelectorFactory;
 import org.apache.druid.segment.vector.VectorValueSelector;
 
@@ -85,8 +83,8 @@ public abstract class SimpleDoubleAggregatorFactory extends NullableNumericAggre
   @Override
   protected Aggregator factorize(ColumnSelectorFactory metricFactory, ColumnValueSelector selector)
   {
-    if (shouldUseStringColumnAggregatorWrapper(metricFactory)) {
-      return new StringColumnDoubleAggregatorWrapper(
+    if (AggregatorUtil.shouldUseObjectColumnAggregatorWrapper(fieldName, metricFactory)) {
+      return new ObjectColumnDoubleAggregatorWrapper(
           selector,
           SimpleDoubleAggregatorFactory.this::buildAggregator,
           nullValue()
@@ -102,8 +100,8 @@ public abstract class SimpleDoubleAggregatorFactory extends NullableNumericAggre
       ColumnValueSelector selector
   )
   {
-    if (shouldUseStringColumnAggregatorWrapper(metricFactory)) {
-      return new StringColumnDoubleBufferAggregatorWrapper(
+    if (AggregatorUtil.shouldUseObjectColumnAggregatorWrapper(fieldName, metricFactory)) {
+      return new ObjectColumnDoubleBufferAggregatorWrapper(
           selector,
           SimpleDoubleAggregatorFactory.this::buildBufferAggregator,
           nullValue()
@@ -130,13 +128,10 @@ public abstract class SimpleDoubleAggregatorFactory extends NullableNumericAggre
     return AggregatorUtil.makeVectorValueSelector(columnSelectorFactory, fieldName, expression, fieldExpression);
   }
 
-  private boolean shouldUseStringColumnAggregatorWrapper(ColumnSelectorFactory columnSelectorFactory)
+  @Override
+  protected boolean useGetObject(ColumnSelectorFactory columnSelectorFactory)
   {
-    if (fieldName != null) {
-      ColumnCapabilities capabilities = columnSelectorFactory.getColumnCapabilities(fieldName);
-      return Types.is(capabilities, ValueType.STRING);
-    }
-    return false;
+    return AggregatorUtil.shouldUseObjectColumnAggregatorWrapper(fieldName, columnSelectorFactory);
   }
 
   @Override
@@ -234,6 +229,7 @@ public abstract class SimpleDoubleAggregatorFactory extends NullableNumericAggre
 
   @Nullable
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public String getFieldName()
   {
     return fieldName;
@@ -241,6 +237,7 @@ public abstract class SimpleDoubleAggregatorFactory extends NullableNumericAggre
 
   @Nullable
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public String getExpression()
   {
     return expression;

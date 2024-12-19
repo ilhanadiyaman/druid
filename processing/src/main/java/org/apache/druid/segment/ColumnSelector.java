@@ -23,14 +23,11 @@ import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnHolder;
 
 import javax.annotation.Nullable;
-import java.util.List;
 
 /**
  */
 public interface ColumnSelector extends ColumnInspector
 {
-  List<String> getColumnNames();
-
   @Nullable
   ColumnHolder getColumnHolder(String columnName);
 
